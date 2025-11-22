@@ -2,24 +2,28 @@
 sidebar_position: 2
 ---
 
-# 快速开始
+# 快速上手
 
 本指南将通过完整的示例演示如何使用 ROCK 创建和管理强化学习环境。ROCK (Reinforcement Open Construction Kit) 是一个全面的沙箱环境管理框架，主要用于强化学习和AI开发环境。
 
 ## 目录
 
-1. [环境准备](#1-环境准备)
-   - [系统要求](#11-系统要求)
-   - [验证依赖安装](#12-验证依赖安装)
-   - [项目初始化](#13-项目初始化)
-2. [激活虚拟环境](#2-激活虚拟环境)
-3. [验证环境配置](#3-验证环境配置)
-4. [启动 ROCK 服务](#4-启动-rock-服务)
-5. [运行示例环境](#5-运行示例环境)
-   - [示例说明](#51-示例说明)
-6. [分布式环境配置（可选）](#6-分布式环境配置可选)
-7. [MacOS 启动](#7-macos启动)
-8. [从Pip源启动](#8-从pip源启动)
+- [快速上手](#快速上手)
+  - [目录](#目录)
+  - [1. 环境准备](#1-环境准备)
+    - [1.1 系统要求](#11-系统要求)
+    - [1.2 验证依赖安装](#12-验证依赖安装)
+    - [1.3 项目初始化](#13-项目初始化)
+  - [2. 激活虚拟环境](#2-激活虚拟环境)
+  - [3. 验证环境配置](#3-验证环境配置)
+  - [4. 启动 ROCK 服务](#4-启动-rock-服务)
+  - [5. 运行示例环境](#5-运行示例环境)
+    - [5.1 示例说明](#51-示例说明)
+  - [6. 分布式环境配置（可选）](#6-分布式环境配置可选)
+  - [7. MacOS 启动](#7-macos-启动)
+  - [8. 从Pip源启动](#8-从pip源启动)
+  - [总结](#总结)
+  - [下一步学习](#下一步学习)
 
 ## 1. 环境准备
 
@@ -152,12 +156,12 @@ export ROCK_WORKER_ENV_TYPE=uv
 
 在容器启动时，会安装对应的 uv 环境，细节可以参考 `rock/rocklet/docker_run_with_uv.sh` 脚本。
 
-> **注意**: 相比 Linux 系统，macOS 上的启动速度会较慢，且比较依赖网络环境，可以根据实际情况调整脚本。ROCK_WORKER_ENV_TYPE的细节可以参考 [Configuration Guide](configuration.md).
+> **注意**: 相比 Linux 系统，macOS 上的启动速度会较慢，且比较依赖网络环境，可以根据实际情况调整脚本。ROCK_WORKER_ENV_TYPE的细节可以参考 [Configuration Guide](../User%20Guides/configuration.md).
 
 
 ## 8. 从Pip源启动
 
-如果从Pip源启动Admin Server，在参照[installation.md](installation.md)安装完成ROCK后, 需要设置额外环境变量: 
+如果从Pip源启动Admin Server，在参照[installation.md](./installation.md)安装完成ROCK后, 需要设置额外环境变量: 
 
 ```bash
 export ROCK_WORKER_ENV_TYPE=pip
@@ -180,8 +184,8 @@ export ROCK_WORKER_ENV_TYPE=pip
 
 ## 下一步学习
 
-- [配置指南](configuration.md) - 详细了解 ROCK 的配置选项
-- [API 文档](api.md) - 查看完整的 API 接口
-- [SDK 文档](sdk.md) - 学习如何使用 Python SDK 进行开发
-- [安装指南](installation.md) - 详细了解 ROCK 安装和配置
-- [概述](overview.md) - 了解 ROCK 的整体架构和设计理念
+- [配置指南](../User%20Guides/configuration.md) - 详细了解 ROCK 的配置选项
+- [API 文档](../References/api.md) - 查看完整的 API 接口
+- [Python SDK 文档](../References/Python%20SDK%20References/python_sdk.md) - 学习如何使用 Python SDK 进行开发
+- [安装指南](./installation.md) - 详细了解 ROCK 安装和配置
+- [概述](../overview.md) - 了解 ROCK 的整体架构和设计理念

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 2
 ---
 
 # Python SDK 参考
@@ -8,13 +8,16 @@ sidebar_position: 6
 
 ## 目录
 
-1. [概述](#1-概述)
-2. [Sandbox SDK](#2-sandbox-sdk)
-   - [基本沙箱操作](#21-基本沙箱操作)
-   - [沙箱组管理](#22-沙箱组管理)
-   - [配置示例](#23-配置示例)
-3. [GEM SDK](#3-gem-sdk)
-   - [Python SDK 方式](#31-python-sdk-方式)
+- [Python SDK 参考](#python-sdk-参考)
+  - [目录](#目录)
+  - [1. 概述](#1-概述)
+  - [2. Sandbox SDK](#2-sandbox-sdk)
+    - [2.1 基本沙箱操作](#21-基本沙箱操作)
+    - [3.2 沙箱组管理](#32-沙箱组管理)
+  - [相关文档](#相关文档)
+    - [3.3 配置示例](#33-配置示例)
+  - [4. GEM SDK](#4-gem-sdk)
+    - [4.1 Python SDK 方式](#41-python-sdk-方式)
 
 ## 1. 概述
 
@@ -95,10 +98,10 @@ await sandbox_group.stop()
 
 ## 相关文档
 
-- [快速开始指南](quickstart.md) - 了解如何快速开始使用 ROCK SDK
-- [API 文档](api.md) - 查看 SDK 封装的底层 API 接口
-- [配置指南](configuration.md) - 了解 SDK 相关的配置选项
-- [安装指南](installation.md) - 详细了解 ROCK 安装和配置
+- [快速开始指南](../../Getting%20Started/quickstart.md) - 了解如何快速开始使用 ROCK SDK
+- [API 文档](../api.md) - 查看 SDK 封装的底层 API 接口
+- [配置指南](../../User%20Guides/configuration.md) - 了解 SDK 相关的配置选项
+- [安装指南](../../Getting%20Started/installation.md) - 详细了解 ROCK 安装和配置
 
 ### 3.3 配置示例
 
