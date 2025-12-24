@@ -106,6 +106,7 @@ test = [
     "pytest-trio",
     "pytest-twisted",
     "pytest-env",
+    "fakeredis[json]",
 ]
 
 [tool.setuptools.packages.find]
