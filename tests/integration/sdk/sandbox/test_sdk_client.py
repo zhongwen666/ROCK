@@ -58,17 +58,22 @@ async def test_arun_timeout(sandbox_instance: Sandbox):
 @pytest.mark.asyncio
 async def test_sandbox_get_status(admin_remote_server):
     config = SandboxConfig(
-        image="fake_image:latest",
+        image="docker.elastic.co/kibana/notfound",
         memory="8g",
         cpus=2.0,
         base_url=f"{admin_remote_server.endpoint}:{admin_remote_server.port}",
-        startup_timeout=10,
+        startup_timeout=40,
     )
     sandbox = Sandbox(config)
+    start_time = time.time()
     with pytest.raises(Exception) as exc_info:
         await sandbox.start()
-    assert "Failed to start sandbox" in str(exc_info.value)
-    sandbox.stop()
+    end_time = time.time()
+    assert "Failed to pull image" in str(exc_info.value)
+    execution_time = end_time - start_time
+    assert execution_time < config.startup_timeout, (
+        f"Execution time {execution_time}s should be less than startup_timeout {config.startup_timeout}s"
+    )
 
 @pytest.mark.need_admin
 @SKIP_IF_NO_DOCKER

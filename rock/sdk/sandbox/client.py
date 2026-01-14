@@ -13,8 +13,8 @@ import oss2
 from httpx import ReadTimeout
 from typing_extensions import deprecated
 
-from rock import env_vars
 import rock
+from rock import env_vars
 from rock.actions import (
     AbstractSandbox,
     Action,
@@ -32,13 +32,14 @@ from rock.actions import (
     OssSetupResponse,
     ReadFileRequest,
     ReadFileResponse,
+    SandboxResponse,
     SandboxStatusResponse,
     UploadRequest,
     UploadResponse,
     WriteFileRequest,
     WriteFileResponse,
 )
-from rock.actions import SandboxResponse
+from rock.deployments.constants import Status
 from rock.sdk.common.constants import PID_PREFIX, PID_SUFFIX, RunModeType
 from rock.sdk.common.exceptions import InternalServerRockError, InvalidParameterRockException, raise_for_code
 from rock.sdk.sandbox.agent.base import Agent
@@ -127,6 +128,16 @@ class Sandbox(AbstractSandbox):
 
         return headers
 
+    async def _parse_error_message_from_status(self, status: dict):
+        # Traverse each stage in the status dictionary
+        for stage, details in status.items():
+            # Check if the status of the current stage is "failed" or "timeout"
+            if details.get("status") == Status.FAILED.value or details.get("status") == Status.TIMEOUT.value:
+                # Return error message, including stage name and specific error message
+                return f"{stage}: {details.get('message', 'No message provided')}"
+        # If no failed stage is found, return None
+        return None
+
     async def start(self):
         url = f"{self._url}/start_async"
         headers = self._build_headers()
@@ -156,13 +167,13 @@ class Sandbox(AbstractSandbox):
 
         start_time = time.time()
         while time.time() - start_time < self.config.startup_timeout:
-            try:
-                status = await self.get_status()
-                logging.debug(f"Get status response: {status}")
-                if status.is_alive:
-                    return
-            except Exception as e:
-                logging.warning(f"Failed to get status, {str(e)}")
+            sandbox_info = await self.get_status()
+            logging.debug(f"Get status response: {sandbox_info}")
+            if sandbox_info.is_alive:
+                return
+            error_msg = await self._parse_error_message_from_status(sandbox_info.status)
+            if error_msg:
+                raise InternalServerRockError(f"Failed to start sandbox because {error_msg}, sandbox: {str(self)}")
             await asyncio.sleep(3)
         raise InternalServerRockError(
             f"Failed to start sandbox within {self.config.startup_timeout}s, sandbox: {str(self)}"
