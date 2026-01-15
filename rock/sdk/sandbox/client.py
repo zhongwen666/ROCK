@@ -14,7 +14,6 @@ from httpx import ReadTimeout
 from typing_extensions import deprecated
 
 from rock import env_vars
-import rock
 from rock.actions import (
     AbstractSandbox,
     Action,
@@ -32,22 +31,27 @@ from rock.actions import (
     OssSetupResponse,
     ReadFileRequest,
     ReadFileResponse,
+    SandboxResponse,
     SandboxStatusResponse,
     UploadRequest,
     UploadResponse,
     WriteFileRequest,
     WriteFileResponse,
 )
-from rock.actions import SandboxResponse
 from rock.sdk.common.constants import PID_PREFIX, PID_SUFFIX, RunModeType
-from rock.sdk.common.exceptions import InternalServerRockError, BadRequestRockError, InternalServerRockError, InvalidParameterRockException, raise_for_code
+from rock.sdk.common.exceptions import (
+    BadRequestRockError,
+    InternalServerRockError,
+    InvalidParameterRockException,
+    raise_for_code,
+)
 from rock.sdk.sandbox.agent.base import Agent
 from rock.sdk.sandbox.config import SandboxConfig, SandboxGroupConfig
+from rock.sdk.sandbox.file_system import FileSystem, LinuxFileSystem
 from rock.sdk.sandbox.model_service.base import ModelService
 from rock.sdk.sandbox.network import Network
 from rock.sdk.sandbox.process import Process
 from rock.sdk.sandbox.remote_user import LinuxRemoteUser, RemoteUser
-from rock.sdk.sandbox.file_system import FileSystem, LinuxFileSystem
 from rock.utils import HttpUtils, extract_nohup_pid, retry_async
 
 logger = logging.getLogger(__name__)
