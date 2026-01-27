@@ -1,5 +1,6 @@
 from typing import Annotated, Literal, TypedDict
 
+from fastapi import Header
 from pydantic import BaseModel, Field
 
 from rock import env_vars
@@ -114,3 +115,34 @@ class SandboxQueryParams(TypedDict, total=False):
     namespace: str
     image: str
     state: str
+
+
+class UserInfo(TypedDict, total=False):
+    user_id: str
+    experiment_id: str
+    namespace: str
+    rock_authorization: str
+
+
+class ClusterInfo(TypedDict, total=False):
+    cluster_name: str
+
+
+class StartHeaders:
+    def __init__(
+        self,
+        x_user_id: str | None = Header(default="default", alias="X-User-Id"),
+        x_experiment_id: str | None = Header(default="default", alias="X-Experiment-Id"),
+        rock_authorization: str | None = Header(default="default", alias="X-Key"),
+        x_namespace: str | None = Header(default="default", alias="X-Namespace"),
+        x_cluster: str | None = Header(default="default", alias="X-Cluster"),
+    ):
+        self.user_info: UserInfo = {
+            "user_id": x_user_id,
+            "experiment_id": x_experiment_id,
+            "namespace": x_namespace,
+            "rock_authorization": rock_authorization,
+        }
+        self.cluster_info: ClusterInfo = {
+            "cluster_name": x_cluster,
+        }

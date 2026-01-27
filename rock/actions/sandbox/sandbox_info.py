@@ -11,6 +11,7 @@ class SandboxInfo(TypedDict, total=False):
     user_id: str
     experiment_id: str
     namespace: str
+    cluster_name: str
     sandbox_id: str
     auth_token: str
     rock_authorization: str
@@ -20,6 +21,8 @@ class SandboxInfo(TypedDict, total=False):
     create_user_gray_flag: bool
     cpus: float
     memory: str
+    create_time: str
+    start_time: str
 
 
 class SandboxListItem(SandboxInfo):

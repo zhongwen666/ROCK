@@ -1,6 +1,6 @@
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, File, Form, Header, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 
 from rock.actions import (
     BashObservation,
@@ -21,6 +21,7 @@ from rock.admin.proto.request import (
     SandboxReadFileRequest,
     SandboxStartRequest,
     SandboxWriteFileRequest,
+    StartHeaders,
 )
 from rock.admin.proto.response import SandboxStartResponse
 from rock.common.constants import GET_STATUS_SWITCH
@@ -48,17 +49,12 @@ async def start(request: SandboxStartRequest) -> RockResponse[SandboxStartRespon
 @handle_exceptions(error_message="async start sandbox failed")
 async def start_async(
     request: SandboxStartRequest,
-    x_user_id: str | None = Header(default="default", alias="X-User-Id"),
-    x_experiment_id: str | None = Header(default="default", alias="X-Experiment-Id"),
-    rock_authorization: str | None = Header(default="default", alias="X-Key"),
+    headers: Annotated[StartHeaders, Depends()],
 ) -> RockResponse[SandboxStartResponse]:
     sandbox_start_response = await sandbox_manager.start_async(
         DockerDeploymentConfig.from_request(request),
-        user_info={
-            "user_id": x_user_id,
-            "experiment_id": x_experiment_id,
-            "rock_authorization": rock_authorization,
-        },
+        user_info=headers.user_info,
+        cluster_info=headers.cluster_info,
     )
     return RockResponse(result=sandbox_start_response)
 
@@ -84,8 +80,9 @@ async def get_sandbox_statistics(sandbox_id: str):
 @sandbox_router.get("/get_status")
 @handle_exceptions(error_message="get sandbox status failed")
 async def get_status(sandbox_id: str):
-    if sandbox_manager.rock_config.nacos_provider is None or sandbox_manager.rock_config.nacos_provider.get_switch_status(
-        GET_STATUS_SWITCH
+    if (
+        sandbox_manager.rock_config.nacos_provider is None
+        or sandbox_manager.rock_config.nacos_provider.get_switch_status(GET_STATUS_SWITCH)
     ):
         return RockResponse(result=await sandbox_manager.get_status_v2(sandbox_id))
     return RockResponse(result=await sandbox_manager.get_status(sandbox_id))

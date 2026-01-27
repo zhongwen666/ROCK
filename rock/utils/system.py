@@ -1,13 +1,16 @@
 import asyncio
+import datetime
 import logging
 import os
 import re
 import socket
 import subprocess
 import time
+import zoneinfo
 from pathlib import Path
 from threading import Lock
 
+from rock import env_vars
 from rock.sdk.common.constants import PID_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -203,3 +206,18 @@ def get_uniagent_endpoint(
     except Exception as e:
         logging.error(f"Error reading UniAgent endpoint: {e}")
         return default_host, default_port
+
+
+def get_iso8601_timestamp(timestamp: int = None, timezone: str = None):
+    """Get current timestamp in ISO8601 format with timezone
+
+    Returns:
+        ISO8601 formatted timestamp string (e.g., "2026-01-21T19:38:00+08:00")
+    """
+
+    tz = zoneinfo.ZoneInfo(timezone if timezone else env_vars.ROCK_TIME_ZONE)
+    if timestamp:
+        time = datetime.datetime.fromtimestamp(timestamp, tz)
+    else:
+        time = datetime.datetime.now(tz)
+    return time.isoformat(timespec="seconds")

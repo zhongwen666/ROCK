@@ -1,5 +1,6 @@
 import re
 
+
 def parse_memory_size(size_str: str) -> int:
     size_str = size_str.strip().lower()
     units = {
@@ -13,7 +14,7 @@ def parse_memory_size(size_str: str) -> int:
         "t": 1024**4,
         "tb": 1024**4,
     }
-    
+
     match = re.match(r"^(\d+(?:\.\d+)?)\s*([a-z]+)?$", size_str)
     if not match:
         raise ValueError(f"Invalid memory size format: {size_str}")
@@ -22,3 +23,9 @@ def parse_memory_size(size_str: str) -> int:
     if unit not in units:
         raise ValueError(f"Unknown memory unit: {unit}")
     return int(number * units[unit])
+
+
+def convert_to_gb(size_str: str) -> str:
+    bytes_size = parse_memory_size(size_str)
+    gb_size = bytes_size / (1024**3)
+    return f"{gb_size:.2f}g"

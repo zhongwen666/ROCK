@@ -20,6 +20,7 @@ from rock.actions.sandbox.sandbox_info import SandboxInfo
 from rock.admin.core.ray_service import RayService
 from rock.admin.core.redis_key import ALIVE_PREFIX, alive_sandbox_key, timeout_sandbox_key
 from rock.admin.metrics.decorator import monitor_sandbox_operation
+from rock.admin.proto.request import ClusterInfo, UserInfo
 from rock.admin.proto.request import SandboxAction as Action
 from rock.admin.proto.request import SandboxCloseBashSessionRequest as CloseBashSessionRequest
 from rock.admin.proto.request import SandboxCommand as Command
@@ -42,9 +43,10 @@ from rock.utils import (
     HttpUtils,
     trace_id_ctx_var,
 )
-from rock.utils.format import parse_memory_size
+from rock.utils.format import convert_to_gb, parse_memory_size
 from rock.utils.providers.redis_provider import RedisProvider
 from rock.utils.service import build_sandbox_from_redis
+from rock.utils.system import get_iso8601_timestamp
 
 logger = init_logger(__name__)
 
@@ -100,27 +102,46 @@ class SandboxManager(BaseManager):
             if self._redis_provider and await self._redis_provider.json_get(alive_sandbox_key(sandbox_id), "$"):
                 raise BadRequestRockError(f"Sandbox {sandbox_id} already exists")
 
+    def _setup_sandbox_actor_metadata(self, sandbox_actor: SandboxActor, user_info: UserInfo) -> None:
+        user_id = user_info.get("user_id", "default")
+        experiment_id = user_info.get("experiment_id", "default")
+        namespace = user_info.get("namespace", "default")
+
+        sandbox_actor.set_user_id.remote(user_id)
+        sandbox_actor.set_experiment_id.remote(experiment_id)
+        sandbox_actor.set_namespace.remote(namespace)
+
+    def _build_sandbox_info_metadata(
+        self, sandbox_info: SandboxInfo, user_info: UserInfo, cluster_info: ClusterInfo
+    ) -> None:
+        sandbox_info["memory"] = convert_to_gb(sandbox_info.get("memory"))
+        sandbox_info["user_id"] = user_info.get("user_id", "default")
+        sandbox_info["experiment_id"] = user_info.get("experiment_id", "default")
+        sandbox_info["namespace"] = user_info.get("namespace", "default")
+        sandbox_info["cluster_name"] = cluster_info.get("cluster_name", "default")
+        sandbox_info["rock_authorization"] = user_info.get("rock_authorization", "default")
+        sandbox_info["state"] = State.PENDING
+        sandbox_info["create_time"] = get_iso8601_timestamp()
+
     @monitor_sandbox_operation()
-    async def start_async(self, config: DeploymentConfig, user_info: dict = {}) -> SandboxStartResponse:
+    async def start_async(
+        self, config: DeploymentConfig, user_info: UserInfo = {}, cluster_info: ClusterInfo = {}
+    ) -> SandboxStartResponse:
         async with self._ray_service.get_ray_rwlock().read_lock():
             await self._check_sandbox_exists_in_redis(config)
             docker_deployment_config: DockerDeploymentConfig = await self.deployment_manager.init_config(config)
             sandbox_id = docker_deployment_config.container_name
-            logger.info(f"[{sandbox_id}] start_async params:{json.dumps(docker_deployment_config.model_dump(), indent=2)}")
+            logger.info(
+                f"[{sandbox_id}] start_async params:{json.dumps(docker_deployment_config.model_dump(), indent=2)}"
+            )
             actor_name = self.deployment_manager.get_actor_name(sandbox_id)
 
             deployment = docker_deployment_config.get_deployment()
 
             self.validate_sandbox_spec(self.rock_config.runtime, config)
             sandbox_actor: SandboxActor = await deployment.creator_actor(actor_name)
-            user_id = user_info.get("user_id", "default")
-            experiment_id = user_info.get("experiment_id", "default")
-            namespace = user_info.get("namespace", "default")
-            rock_authorization = user_info.get("rock_authorization", "default")
             sandbox_actor.start.remote()
-            sandbox_actor.set_user_id.remote(user_id)
-            sandbox_actor.set_experiment_id.remote(experiment_id)
-            sandbox_actor.set_namespace.remote(namespace)
+            self._setup_sandbox_actor_metadata(sandbox_actor, user_info)
 
             self._sandbox_meta[sandbox_id] = {"image": docker_deployment_config.image}
             logger.info(f"sandbox {sandbox_id} is submitted")
@@ -130,11 +151,7 @@ class SandboxManager(BaseManager):
                 env_vars.ROCK_SANDBOX_EXPIRE_TIME_KEY: stop_time,
             }
             sandbox_info: SandboxInfo = await self.async_ray_get(sandbox_actor.sandbox_info.remote())
-            sandbox_info["user_id"] = user_id
-            sandbox_info["experiment_id"] = experiment_id
-            sandbox_info["namespace"] = namespace
-            sandbox_info["state"] = State.PENDING
-            sandbox_info["rock_authorization"] = rock_authorization
+            self._build_sandbox_info_metadata(sandbox_info, user_info, cluster_info)
             if self._redis_provider:
                 await self._redis_provider.json_set(alive_sandbox_key(sandbox_id), "$", sandbox_info)
                 await self._redis_provider.json_set(timeout_sandbox_key(sandbox_id), "$", auto_clear_time_dict)
@@ -236,8 +253,7 @@ class SandboxManager(BaseManager):
                         # The start() method will write to redis on the first call to get_status()
                         sandbox_info = await self.async_ray_get(sandbox_actor.sandbox_info.remote())
                     sandbox_info.update(remote_status.to_dict())
-                    if alive.is_alive:
-                        sandbox_info["state"] = State.RUNNING
+                    self._update_sandbox_alive_info(sandbox_info, alive.is_alive)
                     await self._redis_provider.json_set(alive_sandbox_key(sandbox_id), "$", sandbox_info)
                     await self._update_expire_time(sandbox_id)
                     logger.info(f"sandbox {sandbox_id} status is {sandbox_info}, write to redis")
@@ -277,9 +293,7 @@ class SandboxManager(BaseManager):
 
         return sandbox_info
 
-    async def _check_alive_status(
-    self, sandbox_id: str, host_ip: str, remote_status: ServiceStatus
-) -> bool:
+    async def _check_alive_status(self, sandbox_id: str, host_ip: str, remote_status: ServiceStatus) -> bool:
         """Check if sandbox is alive"""
         try:
             alive_resp = await HttpUtils.get(
@@ -292,6 +306,13 @@ class SandboxManager(BaseManager):
             return IsAliveResponse(**alive_resp).is_alive
         except Exception:
             return False
+
+    def _update_sandbox_alive_info(self, sandbox_info: SandboxInfo, is_alive: bool) -> None:
+        if is_alive:
+            sandbox_info["state"] = State.RUNNING
+            # Set start_time for the first time the sandbox becomes alive
+            if sandbox_info.get("start_time") is None:
+                sandbox_info["start_time"] = get_iso8601_timestamp()
 
     @monitor_sandbox_operation()
     async def get_status_v2(self, sandbox_id) -> SandboxStatusResponse:
@@ -308,8 +329,7 @@ class SandboxManager(BaseManager):
         # 3. Update sandbox_info and check alive status
         sandbox_info.update(remote_status.to_dict())
         is_alive = await self._check_alive_status(sandbox_id, host_ip, remote_status)
-        if is_alive:
-            sandbox_info["state"] = State.RUNNING
+        self._update_sandbox_alive_info(sandbox_info, is_alive)
 
         # 4. Persist to Redis if Redis exists
         if self._redis_provider:
@@ -340,7 +360,7 @@ class SandboxManager(BaseManager):
         worker_rocklet_port = env_vars.ROCK_WORKER_ROCKLET_PORT if env_vars.ROCK_WORKER_ROCKLET_PORT else Port.PROXY
         execute_url = f"http://{host_ip}:{worker_rocklet_port}/execute"
         read_file_url = f"http://{host_ip}:{worker_rocklet_port}/read_file"
-        headers={"sandbox_id": sandbox_id, EAGLE_EYE_TRACE_ID: trace_id_ctx_var.get()}
+        headers = {"sandbox_id": sandbox_id, EAGLE_EYE_TRACE_ID: trace_id_ctx_var.get()}
         find_file_rsp = await HttpUtils.post(
             url=execute_url,
             headers=headers,
