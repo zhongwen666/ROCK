@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 from rock.actions import SandboxResponse
 from rock.actions.sandbox.response import State
-from rock.actions.sandbox.sandbox_info import SandboxInfo, SandboxListItem
+from rock.actions.sandbox.sandbox_info import SandboxInfo
 
 
 class SandboxStartResponse(SandboxResponse):
@@ -53,7 +53,7 @@ class SandboxListStatusResponse(SandboxStatusResponse):
     rock_authorization_encrypted: str | None = None
 
     @classmethod
-    def from_sandbox_info(cls, sandbox_info: "SandboxListItem") -> "SandboxListStatusResponse":
+    def from_sandbox_info(cls, sandbox_info: "SandboxInfo") -> "SandboxListStatusResponse":
         base_data = super().from_sandbox_info(sandbox_info)
         base_dict = base_data.model_dump()
         base_dict["rock_authorization_encrypted"] = sandbox_info.get("rock_authorization_encrypted", None)

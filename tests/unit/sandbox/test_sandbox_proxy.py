@@ -73,7 +73,7 @@ async def test_list_sandbox(sandbox_manager: SandboxManager, sandbox_proxy_servi
     rock_auth_encrypted = result.items[0].rock_authorization_encrypted
     assert rock_auth_encrypted is not None
     assert rock_auth_encrypted != user_info1["rock_authorization"]
-    assert sandbox_proxy_service._aes_encrypter.decrypt(rock_auth_encrypted) == user_info1["rock_authorization"]
+    assert sandbox_manager._aes_encrypter.decrypt(rock_auth_encrypted) == user_info1["rock_authorization"]
 
     # assert empty list
     result = await sandbox_proxy_service.list_sandboxes(

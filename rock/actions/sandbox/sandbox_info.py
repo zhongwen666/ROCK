@@ -14,7 +14,7 @@ class SandboxInfo(TypedDict, total=False):
     cluster_name: str
     sandbox_id: str
     auth_token: str
-    rock_authorization: str
+    rock_authorization_encrypted: str
     phases: dict[str, PhaseStatus]
     state: State
     port_mapping: dict[int, int]
@@ -23,7 +23,3 @@ class SandboxInfo(TypedDict, total=False):
     memory: str
     create_time: str
     start_time: str
-
-
-class SandboxListItem(SandboxInfo):
-    rock_authorization_encrypted: str

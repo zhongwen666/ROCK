@@ -37,12 +37,13 @@ from rock.rocklet import __version__ as swe_version
 from rock.sandbox import __version__ as gateway_version
 from rock.sandbox.base_manager import BaseManager
 from rock.sandbox.sandbox_actor import SandboxActor
-from rock.sdk.common.exceptions import BadRequestRockError
+from rock.sdk.common.exceptions import BadRequestRockError, InternalServerRockError
 from rock.utils import (
     EAGLE_EYE_TRACE_ID,
     HttpUtils,
     trace_id_ctx_var,
 )
+from rock.utils.crypto_utils import AESEncryption
 from rock.utils.format import convert_to_gb, parse_memory_size
 from rock.utils.providers.redis_provider import RedisProvider
 from rock.utils.service import build_sandbox_from_redis
@@ -67,7 +68,17 @@ class SandboxManager(BaseManager):
         )
         self._ray_service = ray_service
         self._ray_namespace = ray_namespace
+        self._aes_encrypter = AESEncryption()
         logger.info("sandbox service init success")
+
+    async def refresh_aes_key(self):
+        try:
+            await self.rock_config.update()
+            if aes_encrypt_key := self.rock_config.proxy_service.aes_encrypt_key:
+                self._aes_encrypter.key_update(aes_encrypt_key)
+        except Exception as e:
+            logger.error(f"update aes key failed, error: {e}")
+            raise InternalServerRockError(f"update aes key failed, {str(e)}")
 
     async def async_ray_get(self, ray_future: ray.ObjectRef):
         self._ray_service.increment_ray_request_count()
@@ -119,7 +130,8 @@ class SandboxManager(BaseManager):
         sandbox_info["experiment_id"] = user_info.get("experiment_id", "default")
         sandbox_info["namespace"] = user_info.get("namespace", "default")
         sandbox_info["cluster_name"] = cluster_info.get("cluster_name", "default")
-        sandbox_info["rock_authorization"] = user_info.get("rock_authorization", "default")
+        rock_auth = user_info.get("rock_authorization", "default")
+        sandbox_info["rock_authorization_encrypted"] = self._aes_encrypter.encrypt(rock_auth)
         sandbox_info["state"] = State.PENDING
         sandbox_info["create_time"] = get_iso8601_timestamp()
 
