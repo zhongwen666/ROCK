@@ -130,7 +130,7 @@ class Sandbox(AbstractSandbox):
         # Add authentication header
         if self.config.xrl_authorization:
             warnings.warn(
-                "XRL-Authorization is deprecated, use extra_headers instead", category=DeprecationWarning, stacklevel=2,
+                "XRL-Authorization is deprecated, use extra_headers instead", category=DeprecationWarning, stacklevel=2
             )
             headers["XRL-Authorization"] = f"Bearer {self.config.xrl_authorization}"
 
@@ -820,12 +820,9 @@ class Sandbox(AbstractSandbox):
                     success=False, message=f"Failed to upload file {file_name}, sandbox download phase failed"
                 )
             else:
-                return UploadResponse(
-                    success=True,
-                    message=f"Successfully uploaded file {file_name} to {target_path}",
-                )
+                return UploadResponse(success=True, message=f"Successfully uploaded file {file_name} to {target_path}")
         except Exception:
-            return UploadResponse(success=True, message=f"Successfully uploaded file {file_name} to {target_path}")
+            return UploadResponse(success=False, message=f"Failed to upload file {file_name} to {target_path}")
 
     async def _setup_oss(self) -> OssSetupResponse:
         url = f"{self._url}/get_token"
