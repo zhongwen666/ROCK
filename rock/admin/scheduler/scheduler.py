@@ -1,13 +1,16 @@
 # rock/admin/scheduler/scheduler.py
 import asyncio
+from datetime import datetime, timedelta, timezone
 import multiprocessing as mp
 import signal
 import time
 from multiprocessing import Process
 
+import pytz
 import ray
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from rock import env_vars
 from rock.admin.scheduler.task_base import BaseTask
 from rock.admin.scheduler.task_registry import TaskRegistry
 from rock.common.constants import SCHEDULER_LOG_NAME
@@ -94,8 +97,8 @@ async def _run_scheduler_async(
     """Core async logic for running the scheduler."""
     global _worker_cache_ttl
     _worker_cache_ttl = scheduler_config.worker_cache_ttl
-
-    scheduler = AsyncIOScheduler()
+    local_tz = pytz.timezone(env_vars.ROCK_TIME_ZONE)
+    scheduler = AsyncIOScheduler(timezone=local_tz)
 
     # Register tasks in subprocess
     from rock.admin.scheduler.task_factory import TaskFactory
@@ -112,6 +115,7 @@ async def _run_scheduler_async(
             id=task.name,
             name=task.name,
             replace_existing=True,
+            next_run_time=datetime.now(local_tz) + timedelta(seconds=3),
         )
         logger.info(f"Added job '{task.name}' with interval {task.interval_seconds}s")
 
