@@ -86,9 +86,7 @@ def extract_nohup_pid(nohup_output: str) -> int:
         return None
 
 
-async def find_free_port(
-    max_attempts: int = 10, sleep_between_attempts: float = 0.1
-) -> int:
+async def find_free_port(max_attempts: int = 10, sleep_between_attempts: float = 0.1) -> int:
     """Find a free port that is not yet registered
 
     Args:
@@ -110,9 +108,7 @@ async def find_free_port(
                     _REGISTERED_PORTS.add(port)
                     logger.debug(f"Found free port {port}")
                     return port
-            logger.debug(
-                f"Port {port} already registered, trying again after {sleep_between_attempts}s"
-            )
+            logger.debug(f"Port {port} already registered, trying again after {sleep_between_attempts}s")
         time.sleep(sleep_between_attempts)
     msg = f"Failed to find a unique free port after {max_attempts} attempts"
     raise RuntimeError(msg)
@@ -196,9 +192,7 @@ def get_uniagent_endpoint(
     """
     try:
         if not Path(host_info_path).exists():
-            logging.warning(
-                f"Host info file {host_info_path} not found, using default endpoint"
-            )
+            logging.warning(f"Host info file {host_info_path} not found, using default endpoint")
             return default_host, default_port
         ip_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
         with open(host_info_path) as f:
@@ -207,9 +201,7 @@ def get_uniagent_endpoint(
                     host = match.group(1)
                     logging.info(f"Found UniAgent IP: {host}")
                     return host, default_port
-        logging.warning(
-            f"No valid IP found in {host_info_path}, using default endpoint"
-        )
+        logging.warning(f"No valid IP found in {host_info_path}, using default endpoint")
         return default_host, default_port
     except Exception as e:
         logging.error(f"Error reading UniAgent endpoint: {e}")
