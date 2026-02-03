@@ -186,8 +186,19 @@ class BaseTask(ABC):
         except Exception:
             return False
 
-    async def run(self, worker_ips: list[str]):
-        """Run task on all workers."""
-        tasks = [self.run_on_worker(ip) for ip in worker_ips]
+    async def run(self, worker_ips: list[str], max_concurrency: int = 50):
+        """Run task on all workers with concurrency control.
+
+        Args:
+            worker_ips: List of worker IP addresses
+            max_concurrency: Maximum number of concurrent tasks (default: 50)
+        """
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def run_with_limit(ip: str) -> bool:
+            async with semaphore:
+                return await self.run_on_worker(ip)
+
+        tasks = [run_with_limit(ip) for ip in worker_ips]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return results
