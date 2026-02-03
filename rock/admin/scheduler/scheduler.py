@@ -181,20 +181,6 @@ class TaskScheduler:
             self._scheduler.shutdown(wait=False)
             logger.info("Scheduler stopped")
 
-
-def _run_scheduler_in_process(
-    scheduler_config: SchedulerConfig,
-    ray_address: str,
-    ray_namespace: str,
-) -> None:
-    """Entry point for running scheduler in a separate process."""
-    try:
-        task_scheduler = TaskScheduler(scheduler_config, ray_address, ray_namespace)
-        asyncio.run(task_scheduler.run())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Scheduler process interrupted")
-
-
 class SchedulerProcess:
     """Scheduler process manager - runs APScheduler in a separate process."""
 
@@ -205,6 +191,19 @@ class SchedulerProcess:
         self._process: Process | None = None
         self._ctx = mp.get_context("spawn")
 
+    @staticmethod
+    def _run_scheduler_in_process(
+        scheduler_config: SchedulerConfig,
+        ray_address: str,
+        ray_namespace: str,
+    ) -> None:
+        """Entry point for running scheduler in a separate process."""
+        try:
+            task_scheduler = TaskScheduler(scheduler_config, ray_address, ray_namespace)
+            asyncio.run(task_scheduler.run())
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Scheduler process interrupted")
+
     def start(self) -> None:
         """Start the scheduler process."""
         if self._process and self._process.is_alive():
@@ -212,7 +211,7 @@ class SchedulerProcess:
             return
 
         self._process = self._ctx.Process(
-            target=_run_scheduler_in_process,
+            target=self._run_scheduler_in_process,
             args=(self.scheduler_config, self.ray_address, self.ray_namespace),
             daemon=True,
         )
