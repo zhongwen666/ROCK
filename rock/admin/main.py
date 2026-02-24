@@ -9,6 +9,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
+from OpenSource.rock.utils.system import is_primary_pod
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
@@ -114,8 +115,7 @@ async def lifespan(app: FastAPI):
         set_warmup_service(warmup_service)
         set_env_service(sandbox_manager)
 
-        # if rock_config.scheduler.enabled and is_primary_pod():
-        if rock_config.scheduler.enabled:
+        if rock_config.scheduler.enabled and is_primary_pod():
             scheduler_process = SchedulerProcess(
                 scheduler_config=rock_config.scheduler,
                 ray_address=rock_config.ray.address,
