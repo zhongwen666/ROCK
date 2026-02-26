@@ -165,6 +165,7 @@ class Sandbox(AbstractSandbox):
         headers = self._build_headers()
         data = {
             "image": self.config.image,
+            "image_os": self.config.image_os,
             "auto_clear_time": self.config.auto_clear_seconds / 60,
             "auto_clear_time_minutes": self.config.auto_clear_seconds / 60,
             "startup_timeout": self.config.startup_timeout,
