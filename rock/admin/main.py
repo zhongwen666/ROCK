@@ -18,7 +18,7 @@ from rock.admin.entrypoints.sandbox_api import sandbox_router, set_sandbox_manag
 from rock.admin.entrypoints.sandbox_proxy_api import sandbox_proxy_router, set_sandbox_proxy_service
 from rock.admin.entrypoints.warmup_api import set_warmup_service, warmup_router
 from rock.admin.gem.api import gem_router, set_env_service
-from rock.admin.scheduler.scheduler import SchedulerProcess
+from rock.admin.scheduler.scheduler import SchedulerThread
 from rock.config import RockConfig
 from rock.logger import init_logger
 from rock.sandbox.gem_manager import GemManager
@@ -65,8 +65,8 @@ async def lifespan(app: FastAPI):
         )
         await redis_provider.init_pool()
 
-    # init scheduler process
-    scheduler_process = None
+    # init scheduler thread
+    scheduler_thread = None
 
     # init sandbox service
     if args.role == "admin":
@@ -109,15 +109,13 @@ async def lifespan(app: FastAPI):
         set_env_service(sandbox_manager)
 
         if rock_config.scheduler.enabled and is_primary_pod():
-            scheduler_process = SchedulerProcess(
+            scheduler_thread = SchedulerThread(
                 scheduler_config=rock_config.scheduler,
-                ray_address=rock_config.ray.address,
-                ray_namespace=rock_config.ray.namespace,
             )
-            scheduler_process.start()
-            logger.info("Scheduler process started on primary pod")
+            scheduler_thread.start()
+            logger.info("Scheduler thread started on primary pod")
         elif rock_config.scheduler.enabled:
-            logger.info("Scheduler process skipped on non-primary pod")
+            logger.info("Scheduler thread skipped on non-primary pod")
 
     else:
         sandbox_manager = SandboxProxyService(rock_config=rock_config, redis_provider=redis_provider)
@@ -127,10 +125,10 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # stop scheduler process
-    if scheduler_process:
-        scheduler_process.stop()
-        logger.info("Scheduler process stopped")
+    # stop scheduler thread
+    if scheduler_thread:
+        scheduler_thread.stop()
+        logger.info("Scheduler thread stopped")
 
     if redis_provider:
         await redis_provider.close_pool()
