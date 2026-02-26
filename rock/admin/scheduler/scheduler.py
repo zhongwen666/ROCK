@@ -1,10 +1,8 @@
 # rock/admin/scheduler/scheduler.py
 import asyncio
-import multiprocessing as mp
-import signal
+import threading
 import time
 from datetime import datetime, timedelta
-from multiprocessing import Process
 
 import pytz
 import ray
@@ -23,9 +21,7 @@ logger = init_logger(name="scheduler", file_name=SCHEDULER_LOG_NAME)
 class WorkerIPCache:
     """Manages Ray worker IP caching with TTL-based expiration."""
 
-    def __init__(self, ray_address: str, ray_namespace: str, cache_ttl: int = 60):
-        self.ray_address = ray_address
-        self.ray_namespace = ray_namespace
+    def __init__(self, cache_ttl: int = 60):
         self.cache_ttl = cache_ttl
         self._cached_ips: list[str] = []
         self._cache_time: float = 0.0
@@ -35,30 +31,16 @@ class WorkerIPCache:
         return (time.time() - self._cache_time) > self.cache_ttl
 
     def _fetch_worker_ips_from_ray(self) -> list[str]:
-        """Connect to Ray and fetch alive worker IPs."""
+        """Fetch alive worker IPs from the already-initialized Ray cluster."""
         logger.info("Refreshing worker IP cache from Ray cluster")
-
-        should_shutdown = False
-        if not ray.is_initialized():
-            logger.info(f"Ray start init with address[{self.ray_address}] and namespace[{self.ray_namespace}]")
-            ray.init(address=self.ray_address, namespace=self.ray_namespace)
-            should_shutdown = True
-        else:
-            logger.info("Ray has already initialized")
-
-        try:
-            nodes = ray.nodes()
-            alive_ips = []
-            for node in nodes:
-                if node.get("Alive", False) and node.get("Resources", {}).get("CPU", 0) > 0:
-                    ip = node.get("NodeManagerAddress", "").split(":")[0]
-                    if ip:
-                        alive_ips.append(ip)
-            return alive_ips
-        finally:
-            if should_shutdown:
-                ray.shutdown()
-                logger.debug("Ray connection closed after fetching worker IPs")
+        nodes = ray.nodes()
+        alive_ips = []
+        for node in nodes:
+            if node.get("Alive", False) and node.get("Resources", {}).get("CPU", 0) > 0:
+                ip = node.get("NodeManagerAddress", "").split(":")[0]
+                if ip:
+                    alive_ips.append(ip)
+        return alive_ips
 
     def refresh(self) -> list[str]:
         """Force refresh the worker IP cache."""
@@ -69,11 +51,6 @@ class WorkerIPCache:
             return self._cached_ips
         except Exception as e:
             logger.error(f"Failed to refresh worker cache: {e}")
-            if ray.is_initialized():
-                try:
-                    ray.shutdown()
-                except Exception:
-                    pass
             return self._cached_ips
 
     def get_alive_workers(self, force_refresh: bool = False) -> list[str]:
@@ -90,25 +67,17 @@ class WorkerIPCache:
 class TaskScheduler:
     """Manages task scheduling using APScheduler."""
 
-    def __init__(
-        self,
-        scheduler_config: SchedulerConfig,
-        ray_address: str,
-        ray_namespace: str,
-    ):
+    def __init__(self, scheduler_config: SchedulerConfig):
         self.scheduler_config = scheduler_config
-        self.ray_address = ray_address
-        self.ray_namespace = ray_namespace
         self.local_tz = pytz.timezone(env_vars.ROCK_TIME_ZONE)
         self._scheduler: AsyncIOScheduler | None = None
         self._stop_event: asyncio.Event | None = None
         self._worker_cache: WorkerIPCache | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _init_worker_cache(self) -> None:
         """Initialize the worker IP cache."""
         self._worker_cache = WorkerIPCache(
-            ray_address=self.ray_address,
-            ray_namespace=self.ray_namespace,
             cache_ttl=self.scheduler_config.worker_cache_ttl,
         )
 
@@ -145,17 +114,6 @@ class TaskScheduler:
             )
             logger.info(f"Added job '{task.type}' with interval {task.interval_seconds}s")
 
-    def _setup_signal_handlers(self) -> None:
-        """Setup signal handlers for graceful shutdown."""
-
-        def signal_handler(signum, frame):
-            logger.info("Received signal, shutting down scheduler")
-            if self._stop_event:
-                self._stop_event.set()
-
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-
     async def run(self) -> None:
         """Run the scheduler until stopped."""
         self._init_worker_cache()
@@ -171,7 +129,7 @@ class TaskScheduler:
         logger.info("Scheduler started")
 
         self._stop_event = asyncio.Event()
-        self._setup_signal_handlers()
+        self._loop = asyncio.get_event_loop()
 
         try:
             await self._stop_event.wait()
@@ -181,53 +139,50 @@ class TaskScheduler:
             self._scheduler.shutdown(wait=False)
             logger.info("Scheduler stopped")
 
-class SchedulerProcess:
-    """Scheduler process manager - runs APScheduler in a separate process."""
+    def stop(self) -> None:
+        """Thread-safe stop: signal the scheduler to shut down."""
+        if self._stop_event and self._loop:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
 
-    def __init__(self, scheduler_config: SchedulerConfig, ray_address: str, ray_namespace: str):
+
+class SchedulerThread:
+    """Scheduler thread manager - runs APScheduler in a daemon thread with its own event loop."""
+
+    def __init__(self, scheduler_config: SchedulerConfig):
         self.scheduler_config = scheduler_config
-        self.ray_address = ray_address
-        self.ray_namespace = ray_namespace
-        self._process: Process | None = None
-        self._ctx = mp.get_context("spawn")
+        self._thread: threading.Thread | None = None
+        self._task_scheduler: TaskScheduler | None = None
 
-    @staticmethod
-    def _run_scheduler_in_process(
-        scheduler_config: SchedulerConfig,
-        ray_address: str,
-        ray_namespace: str,
-    ) -> None:
-        """Entry point for running scheduler in a separate process."""
+    def _run_scheduler_in_thread(self) -> None:
+        """Entry point for running scheduler in a thread with a dedicated event loop."""
         try:
-            task_scheduler = TaskScheduler(scheduler_config, ray_address, ray_namespace)
-            asyncio.run(task_scheduler.run())
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Scheduler process interrupted")
+            self._task_scheduler = TaskScheduler(self.scheduler_config)
+            asyncio.run(self._task_scheduler.run())
+        except Exception:
+            logger.exception("Scheduler thread encountered an error")
 
     def start(self) -> None:
-        """Start the scheduler process."""
-        if self._process and self._process.is_alive():
-            logger.warning("Scheduler process is already running")
+        """Start the scheduler thread."""
+        if self._thread and self._thread.is_alive():
+            logger.warning("Scheduler thread is already running")
             return
 
-        self._process = self._ctx.Process(
-            target=self._run_scheduler_in_process,
-            args=(self.scheduler_config, self.ray_address, self.ray_namespace),
+        self._thread = threading.Thread(
+            target=self._run_scheduler_in_thread,
+            name="scheduler-thread",
             daemon=True,
         )
-        self._process.start()
-        logger.info(f"Scheduler process started with PID: {self._process.pid}")
+        self._thread.start()
+        logger.info("Scheduler thread started")
 
     def stop(self) -> None:
-        """Stop the scheduler process."""
-        if self._process and self._process.is_alive():
-            self._process.terminate()
-            self._process.join(timeout=5)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(timeout=2)
-            logger.info("Scheduler process stopped")
+        """Stop the scheduler thread gracefully."""
+        if self._task_scheduler:
+            self._task_scheduler.stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+            logger.info("Scheduler thread stopped")
 
     def is_alive(self) -> bool:
-        """Check if the scheduler process is alive."""
-        return self._process is not None and self._process.is_alive()
+        """Check if the scheduler thread is alive."""
+        return self._thread is not None and self._thread.is_alive()
