@@ -55,6 +55,8 @@ class DockerDeploymentConfig(DeploymentConfig):
     image: str = "python:3.11"
     """Docker image name to use for the container."""
 
+    image_os: str = "linux"
+
     port: int | None = None
     """Port number for container communication. If None, an available port will be automatically assigned."""
 

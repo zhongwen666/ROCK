@@ -29,6 +29,7 @@ class BaseConfig(BaseModel):
 
 class SandboxConfig(BaseConfig):
     image: str = "python:3.11"
+    image_os: str = "linux"
     auto_clear_seconds: int = 60 * 5
     route_key: str | None = None
     startup_timeout: float = env_vars.ROCK_SANDBOX_STARTUP_TIMEOUT_SECONDS
