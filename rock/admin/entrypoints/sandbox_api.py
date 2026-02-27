@@ -44,8 +44,11 @@ async def _apply_kata_runtime_switch(config: DockerDeploymentConfig) -> None:
     if (
         sandbox_manager.rock_config.nacos_provider is not None
         and await sandbox_manager.rock_config.nacos_provider.get_switch_status(KATA_RUNTIME_SWITCH)
+        and config.use_kata_runtime
     ):
         config.use_kata_runtime = True
+    else:
+        config.use_kata_runtime = False
 
 
 @sandbox_router.post("/start")
