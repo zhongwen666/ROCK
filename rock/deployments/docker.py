@@ -18,6 +18,7 @@ from rock.deployments.abstract import AbstractDeployment
 from rock.deployments.config import DockerDeploymentConfig
 from rock.deployments.constants import Port, Status
 from rock.deployments.hooks.abstract import CombinedDeploymentHook, DeploymentHook
+from rock.deployments.hooks.docker_login import DockerLoginHook
 from rock.deployments.runtime_env import DockerRuntimeEnv, LocalRuntimeEnv, PipRuntimeEnv, UvRuntimeEnv
 from rock.deployments.sandbox_validator import DockerSandboxValidator
 from rock.deployments.status import PersistedServiceStatus, ServiceStatus
@@ -75,6 +76,11 @@ class DockerDeployment(AbstractDeployment):
             self._runtime_env = PipRuntimeEnv(self._config.runtime_config)
         else:
             raise Exception(f"Invalid ROCK_WORKER_ENV_TYPE: {env_vars.ROCK_WORKER_ENV_TYPE}")
+
+        if self._config.registry_username is not None and self._config.registry_password is not None:
+            self.add_hook(
+                DockerLoginHook(self._config.image, self._config.registry_username, self._config.registry_password)
+            )
 
         self.sandbox_validator: DockerSandboxValidator | None = DockerSandboxValidator()
 

@@ -37,6 +37,39 @@ class DockerUtil:
             raise subprocess.CalledProcessError(e.returncode, e.cmd, e.output, e.stderr) from None
 
     @classmethod
+    def login(cls, registry: str, username: str, password: str, timeout: int = 30) -> str:
+        """Login to a Docker registry
+
+        Args:
+            registry: Docker registry URL (e.g. registry.example.com)
+            username: Registry username
+            password: Registry password
+            timeout: Command timeout in seconds
+
+        Returns:
+            Command output as string on success
+
+        Raises:
+            subprocess.CalledProcessError: If login fails
+        """
+        try:
+            result = subprocess.run(
+                ["docker", "login", registry, "-u", username, "--password-stdin"],
+                input=password,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                logger.error(f"Docker login to {registry} failed: {result.stderr.strip()}")
+                raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+            logger.info(f"Successfully logged in to {registry}")
+            return result.stdout.strip()
+        except subprocess.TimeoutExpired:
+            logger.error(f"Docker login to {registry} timed out after {timeout}s")
+            raise
+
+    @classmethod
     def remove_image(image: str) -> bytes:
         """Remove a Docker image"""
         return subprocess.check_output(["docker", "rmi", image], timeout=30)
