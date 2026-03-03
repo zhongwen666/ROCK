@@ -41,6 +41,7 @@ class SandboxConfig(BaseConfig):
     namespace: str | None = None
     registry_username: str | None = None
     registry_password: str | None = None
+    use_kata_runtime: bool = False
 
 
 class SandboxGroupConfig(SandboxConfig):
