@@ -16,6 +16,7 @@ from rock.deployments.config import DeploymentConfig, DockerDeploymentConfig
 from rock.deployments.docker import DockerDeployment
 from rock.logger import init_logger
 from rock.utils import get_uniagent_endpoint
+from rock.utils.system import get_instance_id
 
 logger = init_logger(__name__)
 
@@ -34,6 +35,8 @@ class BaseActor:
     _user_id: str = "default"
     _experiment_id: str = "default"
     _namespace = "default"
+    _metrics_endpoint = ""
+    _user_defined_tags: dict = {}
 
     def __init__(
         self,
@@ -51,6 +54,7 @@ class BaseActor:
         self._env = "dev"
         self._user_id = "default"
         self._experiment_id = "default"
+        self._ip = get_instance_id()
 
     async def deployment_config(self) -> DeploymentConfig | None:
         return self._config
@@ -78,7 +82,8 @@ class BaseActor:
         role = self._role
         self.host = host
         logger.info(f"Initializing MetricsCollector with host={host}, port={port}, " f"env={env}, role={role}")
-        self.otlp_exporter = OTLPMetricExporter(endpoint=f"http://{host}:{port}/v1/metrics")
+        endpoint = self._metrics_endpoint or f"http://{host}:{port}/v1/metrics"
+        self.otlp_exporter = OTLPMetricExporter(endpoint=endpoint)
         self.metric_reader = PeriodicExportingMetricReader(
             self.otlp_exporter,
             export_interval_millis=self._export_interval_millis,
@@ -148,7 +153,15 @@ class BaseActor:
             logger.debug(f"sandbox [{sandbox_id}] metrics = {metrics}")
 
             if metrics.get("cpu") is not None:
-                attributes = {"sandbox_id": sandbox_id, "env": self._env, "role": self._role, "host": self.host}
+                attributes = {
+                    "sandbox_id": sandbox_id,
+                    "env": self._env,
+                    "role": self._role,
+                    "host": self.host,
+                    "ip": self._ip,
+                }
+                if self._user_defined_tags is not None:
+                    attributes.update(self._user_defined_tags)
                 attributes["user_id"] = self._user_id
                 attributes["experiment_id"] = self._experiment_id
                 attributes["namespace"] = self._namespace
@@ -173,6 +186,18 @@ class BaseActor:
         except Exception as e:
             logger.error(f"Error stopping monitoring: {e}")
             pass
+
+    def set_metrics_endpoint(self, metrics_endpoint: str):
+        self._metrics_endpoint = metrics_endpoint
+
+    def get_metrics_endpoint(self) -> str:
+        return self._metrics_endpoint
+
+    def set_user_defined_tags(self, user_defined_tags: dict):
+        self._user_defined_tags = user_defined_tags
+
+    def get_user_defined_tags(self) -> dict:
+        return self._user_defined_tags
 
     async def get_sandbox_statistics(self):
         """Get sandbox statistics - default implementation returns None"""
