@@ -35,6 +35,7 @@ class SandboxConfig(BaseConfig):
     startup_timeout: float = env_vars.ROCK_SANDBOX_STARTUP_TIMEOUT_SECONDS
     memory: str = "8g"
     cpus: float = 2
+    limit_cpus: float | None = None
     user_id: str | None = None
     experiment_id: str | None = None
     cluster: str = "zb"
@@ -42,6 +43,7 @@ class SandboxConfig(BaseConfig):
     registry_username: str | None = None
     registry_password: str | None = None
     use_kata_runtime: bool = False
+    sandbox_id: str | None = None
 
 
 class SandboxGroupConfig(SandboxConfig):
