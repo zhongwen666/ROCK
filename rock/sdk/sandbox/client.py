@@ -136,16 +136,16 @@ class Sandbox(AbstractSandbox):
             "X-Cluster": self._cluster,
         }
 
+        # Add extra headers from config
+        if self.config.extra_headers:
+            headers.update(self.config.extra_headers)
+
         # Add authentication header
-        if self.config.xrl_authorization:
+        if headers.get("XRL-Authorization") is None and self.config.xrl_authorization:
             warnings.warn(
                 "XRL-Authorization is deprecated, use extra_headers instead", category=DeprecationWarning, stacklevel=2
             )
             headers["XRL-Authorization"] = f"Bearer {self.config.xrl_authorization}"
-
-        # Add extra headers from config
-        if self.config.extra_headers:
-            headers.update(self.config.extra_headers)
 
         self._add_user_defined_tag_into_headers(headers)
 
