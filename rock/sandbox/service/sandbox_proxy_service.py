@@ -207,13 +207,25 @@ class SandboxProxyService:
             logger.error(f"Error filtering sandboxes: {e}", exc_info=True)
             raise
 
-    async def websocket_proxy(self, client_websocket, sandbox_id: str, target_path: str | None = None):
-        target_url = await self.get_sandbox_websocket_url(sandbox_id, target_path)
+    async def websocket_proxy(
+        self, client_websocket, sandbox_id: str, target_path: str | None = None, port: int | None = None
+    ):
+        target_url = await self.get_sandbox_websocket_url(sandbox_id, target_path, port=port)
+
+        client_subprotocols = getattr(client_websocket, "subprotocols", []) or []
+        upstream_subprotocols = client_subprotocols if client_subprotocols else ["binary"]
 
         try:
-            # Connect to target WebSocket service
-            async with websockets.connect(target_url, ping_interval=None, ping_timeout=None) as target_websocket:
-                # Create bidirectional forwarding tasks
+            async with websockets.connect(
+                target_url,
+                ping_interval=None,
+                ping_timeout=None,
+                subprotocols=upstream_subprotocols,
+            ) as target_websocket:
+                negotiated = getattr(target_websocket, "subprotocol", None)
+                response_subprotocol = negotiated if client_subprotocols else None
+                await client_websocket.accept(subprotocol=response_subprotocol)
+
                 client_to_target = asyncio.create_task(
                     self._forward_messages(client_websocket, target_websocket, "client->target")
                 )
@@ -221,17 +233,18 @@ class SandboxProxyService:
                     self._forward_messages(target_websocket, client_websocket, "target->client")
                 )
 
-                # Wait for any task to complete (usually connection disconnection)
                 done, pending = await asyncio.wait(
                     [client_to_target, target_to_client], return_when=asyncio.FIRST_COMPLETED
                 )
 
-                # Cancel unfinished tasks
                 for task in pending:
                     task.cancel()
 
+        except websockets.ConnectionClosed as e:
+            logger.error(f"Upstream WebSocket connection closed: code={e.code}, reason={e.reason}")
+            await client_websocket.close(code=e.code, reason=e.reason or "")
         except Exception as e:
-            logger.error(f"WebSocket proxy error: {e}")
+            logger.error(f"WebSocket proxy error: {type(e).__name__}: {e}", exc_info=True)
             await client_websocket.close(code=1011, reason=f"Proxy error: {str(e)}")
 
     async def websocket_to_tcp_proxy(
@@ -492,7 +505,7 @@ class SandboxProxyService:
         service_status = ServiceStatus.from_dict(sandbox_status_dict)
         # Use SERVER port mapping to access the sandbox
         # The port inside the container is mapped to a host port
-        mapped_port = service_status.get_mapped_port(Port.SERVER)
+        _mapped_port = service_status.get_mapped_port(Port.SERVER)
         # For now, we use the port as-is since we're connecting to the sandbox's network
         # In a real scenario, we might need to use the mapped port or connect through the container network
         return host_ip, port
@@ -643,7 +656,9 @@ class SandboxProxyService:
             logger.error("generate oss sts token failed")
             return None
 
-    async def get_sandbox_websocket_url(self, sandbox_id: str, target_path: str | None = None) -> str:
+    async def get_sandbox_websocket_url(
+        self, sandbox_id: str, target_path: str | None = None, port: int | None = None
+    ) -> str:
         # if sandbox_id == "iflow-local":   # Local debugging for iflow-cli
         #     return "ws://127.0.0.1:8090/acp"
         # if sandbox_id == "local":   # Local debugging for general ws service
@@ -651,8 +666,9 @@ class SandboxProxyService:
         # Get sandbox  address based on sandbox_id
         status_dicts = await self.get_service_status(sandbox_id)
         host_ip = status_dicts[0].get("host_ip")
-        service_status = ServiceStatus.from_dict(status_dicts[0])
-        port = service_status.get_mapped_port(Port.SERVER)
+        if port is None:
+            service_status = ServiceStatus.from_dict(status_dicts[0])
+            port = service_status.get_mapped_port(Port.SERVER)
 
         if target_path:
             return f"ws://{host_ip}:{port}/{target_path}"
@@ -660,50 +676,40 @@ class SandboxProxyService:
             return f"ws://{host_ip}:{port}"
 
     async def _forward_messages(self, source_ws, target_ws, direction: str):
-        """Forward messages"""
+        """Forward WebSocket messages bidirectionally.
+
+        Handles both FastAPI/Starlette WebSocket and websockets library objects.
+        Uses raw ASGI receive() for FastAPI WebSocket to avoid binary data loss
+        (receive_text() consumes the message from the queue before failing on
+        binary frames, making the data unrecoverable).
+        """
         try:
             while True:
-                message = None
+                data = None
 
-                # Receive message
                 if hasattr(source_ws, "receive_text"):
-                    # FastAPI WebSocket
-                    try:
-                        message = await source_ws.receive_text()
-                    except Exception:
-                        try:
-                            message = await source_ws.receive_bytes()
-                        except Exception as e:
-                            if "websocket.disconnect" in str(e).lower():
-                                logger.info(f"FastAPI WebSocket disconnected in {direction}")
-                                break
-                            raise
+                    # FastAPI/Starlette WebSocket — use raw receive() to read
+                    # from the ASGI queue exactly once per message.
+                    msg = await source_ws.receive()
+                    if msg["type"] == "websocket.disconnect":
+                        logger.info(f"FastAPI WebSocket disconnected in {direction}")
+                        break
+                    data = msg.get("bytes") or msg.get("text", "")
                 elif hasattr(source_ws, "recv"):
-                    # websockets library
-                    message = await source_ws.recv()
+                    data = await source_ws.recv()
                 else:
                     raise ValueError(f"Unsupported WebSocket type: {type(source_ws)}")
 
-                logger.info(f"Forwarding message {direction}: length={len(str(message))} chars")
-                logger.info(f"Forwarding message {direction}: {type(message)}")
-                logger.info(f"Forwarding message {direction}: {message}")
-
-                # Send message
                 if hasattr(target_ws, "send_text"):
-                    # FastAPI WebSocket
-                    if isinstance(message, str):
-                        await target_ws.send_text(message)
-                    elif isinstance(message, bytes):
-                        await target_ws.send_bytes(message)
+                    if isinstance(data, bytes):
+                        await target_ws.send_bytes(data)
                     else:
-                        await target_ws.send_text(str(message))
+                        await target_ws.send_text(data)
                 elif hasattr(target_ws, "send"):
-                    # websockets library
-                    await target_ws.send(message)
+                    await target_ws.send(data)
                 else:
                     raise ValueError(f"Unsupported target WebSocket type: {type(target_ws)}")
-                await asyncio.sleep(0.1)
-        except websockets.exceptions.ConnectionClosed:
+        except websockets.ConnectionClosed:
             logger.info(f"WebSocket connection closed in {direction}")
         except Exception as e:
             logger.error(f"Error forwarding message {direction}: {e}")
@@ -814,27 +820,52 @@ class SandboxProxyService:
                 headers=response_headers,
             )
 
-    async def post_proxy(
+    async def http_proxy(
         self,
         sandbox_id: str,
         target_path: str,
         body: dict | None,
         headers: Headers,
+        method: str = "POST",
+        port: int | None = None,
+        proxy_prefix: str | None = None,
+        query_string: str = "",
     ) -> JSONResponse | StreamingResponse | Response:
-        """HTTP POST proxy that supports both streaming (SSE) and non-streaming responses."""
+        """HTTP proxy that supports all methods and streaming (SSE) responses."""
         await self._update_expire_time(sandbox_id)
 
-        EXCLUDED_HEADERS = {"host", "content-length", "transfer-encoding"}
+        # content-encoding is excluded because httpx decompresses the body automatically;
+        # forwarding it would cause ERR_CONTENT_DECODING_FAILED in the browser.
+        EXCLUDED_HEADERS = {"host", "content-length", "transfer-encoding", "content-encoding"}
 
         def filter_headers(raw_headers: Headers) -> dict:
             return {k: v for k, v in raw_headers.items() if k.lower() not in EXCLUDED_HEADERS}
 
+        def rewrite_location(location: str) -> str:
+            """Rewrite upstream Location header to include proxy prefix.
+
+            Always outputs a relative path (no scheme/host) so the browser
+            inherits the correct scheme (https) from the current page.
+            """
+            from urllib.parse import urlparse
+
+            parsed = urlparse(location)
+            # Absolute URL pointing to upstream → strip scheme+host, keep path+query
+            if parsed.scheme and parsed.netloc:
+                path = parsed.path or "/"
+                qs = f"?{parsed.query}" if parsed.query else ""
+                location = f"{path}{qs}"
+            # proxy_prefix is always a path (e.g. /sandboxes/sb1/proxy/port/8006)
+            return f"{proxy_prefix.rstrip('/')}{location}"
+
         status_list = await self.get_service_status(sandbox_id)
-        service_status = ServiceStatus.from_dict(status_list[0])
 
         host_ip = status_list[0].get("host_ip")
-        port = service_status.get_mapped_port(Port.SERVER)
-        target_url = f"http://{host_ip}:{port}/{target_path}"
+        if port is None:
+            service_status = ServiceStatus.from_dict(status_list[0])
+            port = service_status.get_mapped_port(Port.SERVER)
+        qs = f"?{query_string}" if query_string else ""
+        target_url = f"http://{host_ip}:{port}/{target_path}{qs}"
 
         request_headers = filter_headers(headers)
         payload = body or {}
@@ -844,9 +875,9 @@ class SandboxProxyService:
         try:
             resp = await client.send(
                 client.build_request(
-                    method="POST",
+                    method=method,
                     url=target_url,
-                    json=payload,
+                    json=payload if payload else None,
                     headers=request_headers,
                     timeout=120,
                 ),
@@ -859,6 +890,12 @@ class SandboxProxyService:
         content_type = resp.headers.get("content-type", "")
         is_sse = "text/event-stream" in content_type
         response_headers = filter_headers(resp.headers)
+
+        # Rewrite Location header for 3xx responses when proxy_prefix is set
+        if proxy_prefix and resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location")
+            if location:
+                response_headers["location"] = rewrite_location(location)
 
         if is_sse:
 

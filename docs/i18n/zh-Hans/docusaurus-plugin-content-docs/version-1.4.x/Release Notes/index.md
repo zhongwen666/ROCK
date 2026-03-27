@@ -2,6 +2,7 @@
 sidebar_position: 1
 ---
 # 版本说明
+* [release v1.4.4](v1.4.4.md)
 * [release v1.4.3](v1.4.3.md)
 * [release v1.4.2](v1.4.2.md)
 * [release v1.4.1](v1.4.1.md)
