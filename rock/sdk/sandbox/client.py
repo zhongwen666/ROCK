@@ -75,6 +75,8 @@ class Sandbox(AbstractSandbox):
     _host_ip: str | None = None
     _oss_bucket: oss2.Bucket | None = None
     _cluster: str | None = None
+    _namespace: str | None = None
+    _experiment_id: str | None = None
     agent: RockAgent | None = None
     model_service: ModelService | None = None
     remote_user: RemoteUser | None = None
@@ -136,16 +138,16 @@ class Sandbox(AbstractSandbox):
             "X-Cluster": self._cluster,
         }
 
+        # Add extra headers from config
+        if self.config.extra_headers:
+            headers.update(self.config.extra_headers)
+
         # Add authentication header
-        if self.config.xrl_authorization:
+        if headers.get("XRL-Authorization") is None and self.config.xrl_authorization:
             warnings.warn(
                 "XRL-Authorization is deprecated, use extra_headers instead", category=DeprecationWarning, stacklevel=2
             )
             headers["XRL-Authorization"] = f"Bearer {self.config.xrl_authorization}"
-
-        # Add extra headers from config
-        if self.config.extra_headers:
-            headers.update(self.config.extra_headers)
 
         self._add_user_defined_tag_into_headers(headers)
 
@@ -197,6 +199,10 @@ class Sandbox(AbstractSandbox):
         start_time = time.time()
         while time.time() - start_time < self.config.startup_timeout:
             sandbox_info = await self.get_status()
+            if sandbox_info.namespace is not None:
+                self._namespace = sandbox_info.namespace
+            if sandbox_info.experiment_id is not None:
+                self._experiment_id = sandbox_info.experiment_id
             logging.debug(f"Get status response: {sandbox_info}")
             if sandbox_info.is_alive:
                 return
@@ -639,7 +645,7 @@ class Sandbox(AbstractSandbox):
             try:
                 # Check if process still exists
                 await asyncio.wait_for(
-                    self.run_in_session(BashAction(session=session, command=check_alive_cmd)),
+                    self._run_in_session(BashAction(session=session, command=check_alive_cmd)),
                     timeout=check_alive_timeout,
                 )
 
@@ -831,11 +837,11 @@ class Sandbox(AbstractSandbox):
         url = self._oss_bucket.sign_url("GET", tmp_obj_name, 600, slash_safe=True)
         try:
             download_cmd = f"wget -c -O {target_path} '{url}'"
-            await self.run_nohup_and_wait(cmd=download_cmd, wait_timeout=600)
+            await self.arun(cmd=download_cmd, wait_timeout=600, mode=RunMode.NOHUP)
             check_file_session = f"bash-{timestamp}"
             await self.create_session(CreateBashSessionRequest(session=check_file_session))
             check_file_cmd = f"test -f {target_path}"
-            check_response: Observation = await self.run_in_session(
+            check_response: Observation = await self._run_in_session(
                 action=BashAction(command=check_file_cmd, session=check_file_session)
             )
             if not check_response.exit_code == 0:

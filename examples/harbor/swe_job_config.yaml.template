@@ -1,0 +1,35 @@
+# ── Job Identity ─────────────────────────────────────
+experiment_id: "<your-experiment-id>"
+
+# ── Rock Environment ─────────────────────────────────
+environment:
+  base_url: "<your-rock-base-url>"
+  xrl_authorization: "<your-xrl-auth-token>"
+  image: "<your-harbor-image:tag>"
+  cluster: "<your-cluster>"
+  memory: "32g"
+  cpus: 8
+  startup_timeout: 1800
+  auto_clear_seconds: 7200
+  auto_stop: false
+  env:
+    OPENAI_API_KEY: "<your-openai-api-key>"
+    OPENAI_BASE_URL: "<your-openai-base-url>"
+
+# ── Harbor Native ────────────────────────────────────
+agents:
+  - name: "swe-agent"
+    model_name: "custom_openai/<your-model>"
+
+datasets:
+  - name: "princeton-nlp/SWE-bench_Verified"
+    registry:
+      split: "test"
+      oss_access_key_id: "<your-oss-access-key-id>"
+      oss_access_key_secret: "<your-oss-access-key-secret>"
+      oss_bucket: "<your-oss-bucket>"
+      oss_dataset_path: "<your-oss-dataset-path>"
+      oss_region: "<your-oss-region>"
+      oss_endpoint: "<your-oss-endpoint>"
+    task_names:
+      - "astropy__astropy-7606"
