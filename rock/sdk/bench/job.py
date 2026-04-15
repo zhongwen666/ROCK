@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import uuid
+from pathlib import Path
 
 from rock.actions import Command, CreateBashSessionRequest, ReadFileRequest
 from rock.logger import init_logger
@@ -44,9 +45,6 @@ fi
 # ── Ensure output directory exists ──────────────────────────────────
 mkdir -p {user_defined_dir}
 
-# ── Setup commands ───────────────────────────────────────────────────
-{setup_commands}
-
 # ── Harbor run ───────────────────────────────────────────────────────
 harbor jobs start -c {config_path}
 """
@@ -55,7 +53,7 @@ harbor jobs start -c {config_path}
 class Job:
     """Execute Harbor benchmark tasks inside ROCK sandboxes.
 
-    Unifies setup_commands + harbor run into a single bash script, executed
+    Unifies harbor run into a single bash script, executed
     via the sandbox nohup protocol:
     - ``run()``: Full lifecycle (blocking wait)
     - ``submit()``: Start and return job_id immediately
@@ -170,9 +168,13 @@ class Job:
         await self._create_session()
 
         # 1. Upload user-specified files/dirs
-        for local_path, sandbox_path in self._config.environment.file_uploads:
+        for local_path, sandbox_path in self._config.environment.uploads:
             logger.info(f"Uploading {local_path} -> {sandbox_path}")
-            await self._sandbox.fs.upload_dir(local_path, sandbox_path)
+            src = Path(local_path)
+            if src.is_file():
+                await self._sandbox.upload_by_path(file_path=local_path, target_path=sandbox_path)
+            else:
+                await self._sandbox.fs.upload_dir(local_path, sandbox_path)
 
         # 2. Upload harbor config YAML + run script
         config_path = f"{USER_DEFINED_LOGS}/rock_job_{self._config.job_name}.yaml"
@@ -196,16 +198,8 @@ class Job:
         )
 
     def _render_run_script(self, config_path: str) -> str:
-        """Render the run script (dockerd + setup_commands + harbor run)."""
-        # Setup commands
-        setup_lines = []
-        for cmd in self._config.environment.setup_commands:
-            setup_lines.append(f"echo '>>> {cmd[:60]}...'")
-            setup_lines.append(cmd)
-        setup_block = "\n".join(setup_lines) if setup_lines else "echo 'No setup commands'"
-
+        """Render the run script (dockerd + harbor run)."""
         return _RUN_SCRIPT_TEMPLATE.format(
-            setup_commands=setup_block,
             config_path=config_path,
             user_defined_dir=USER_DEFINED_LOGS,
         )
@@ -285,7 +279,7 @@ class Job:
 
         If job_name is None, generate one with the format:
         {dataset_name}_{task_name if single task}_{uuid}
-        
+
         For dataset_name and task_name, only the last segment after "/" is used.
         """
         if self._config.job_name is not None:
