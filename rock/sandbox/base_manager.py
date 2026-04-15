@@ -10,8 +10,8 @@ from rock.admin.metrics.monitor import MetricsMonitor, aggregate_metrics
 from rock.config import RockConfig
 from rock.deployments.manager import DeploymentManager
 from rock.logger import init_logger
-from rock.utils import get_executor
 from rock.sandbox.sandbox_meta_store import SandboxMetaStore
+from rock.utils import get_executor
 
 logger = init_logger(__name__)
 
@@ -108,7 +108,7 @@ class BaseManager:
         logger.debug(f"Metrics overall report rt:{overall_duration:.4f}s")
 
     async def _report_system_resource_metrics(self):
-        """汇报系统资源指标"""
+        """Report system resource metrics."""
         total_cpu, total_mem, available_cpu, available_mem = await self._collect_system_resource_metrics()
         self.metrics_monitor.record_gauge_by_name(MetricsConstants.TOTAL_CPU_RESOURCE, total_cpu)
         self.metrics_monitor.record_gauge_by_name(MetricsConstants.TOTAL_MEM_RESOURCE, total_mem)
@@ -116,7 +116,7 @@ class BaseManager:
         self.metrics_monitor.record_gauge_by_name(MetricsConstants.AVAILABLE_MEM_RESOURCE, available_mem)
 
     async def _collect_system_resource_metrics(self):
-        """收集系统资源指标"""
+        """Collect system resource metrics."""
         cluster_resources = ray.cluster_resources()
         available_resources = ray.available_resources()
         total_cpu = cluster_resources.get("CPU", 0)
