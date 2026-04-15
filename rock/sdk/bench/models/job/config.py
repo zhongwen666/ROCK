@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rock.sdk.bench.constants import USER_DEFINED_LOGS
 from rock.sdk.bench.models.metric.config import MetricConfig
@@ -174,6 +174,11 @@ class HarborJobConfig(_BaseJobConfig):
     and passed to ``harbor jobs start -c``.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
+    # ── experiment_id is required for HarborJob (overrides nullable base field) ──
+    experiment_id: str = Field(min_length=1)
+
     # ── Override environment to use RockEnvironmentConfig (adds harbor env fields) ──
     environment: RockEnvironmentConfig = Field(default_factory=RockEnvironmentConfig)
 
@@ -197,8 +202,6 @@ class HarborJobConfig(_BaseJobConfig):
     @model_validator(mode="after")
     def _sync_experiment_id(self):
         """Sync experiment_id: JobConfig -> environment -> oss_mirror."""
-        if not self.experiment_id:
-            raise ValueError("experiment_id must not be empty")
         env_exp = self.environment.experiment_id
         if env_exp is not None and env_exp != self.experiment_id:
             raise ValueError(
@@ -290,15 +293,6 @@ class HarborJobConfig(_BaseJobConfig):
         if harbor_env:
             data["environment"] = harbor_env
         return yaml.dump(data, default_flow_style=False, allow_unicode=True)
-
-    @classmethod
-    def from_yaml(cls, path: str) -> HarborJobConfig:
-        """Load HarborJobConfig from a Harbor YAML config file."""
-        import yaml
-
-        with open(path) as f:
-            data = yaml.safe_load(f)
-        return cls(**data)
 
     def enable_oss_mirror(
         self,

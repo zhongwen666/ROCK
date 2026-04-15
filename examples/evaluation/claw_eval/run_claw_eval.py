@@ -14,13 +14,12 @@ import os
 import sys
 from pathlib import Path
 
-from rock.sdk.job import Job
-from rock.sdk.job.config import BashJobConfig
+from rock.sdk.job import Job, JobConfig
 
 
 async def main() -> None:
     config_path = sys.argv[1] if len(sys.argv) > 1 else "claw_eval_bashjob.yaml"
-    config = BashJobConfig.from_yaml(config_path)
+    config = JobConfig.from_yaml(config_path)
     result = await Job(config).run()
     print(f"Job completed: status={result.status}, trials={len(result.trial_results)}")
 
