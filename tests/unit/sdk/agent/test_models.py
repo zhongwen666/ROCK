@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from rock.sdk.agent.models.environment_type import EnvironmentType
-from rock.sdk.agent.models.job.config import (
-    JobConfig,
+from rock.sdk.bench.models.environment_type import EnvironmentType
+from rock.sdk.bench.models.job.config import (
+    HarborJobConfig,
     LocalDatasetConfig,
     OrchestratorConfig,
     RegistryDatasetConfig,
@@ -10,16 +10,16 @@ from rock.sdk.agent.models.job.config import (
     RetryConfig,
     RockEnvironmentConfig,
 )
-from rock.sdk.agent.models.metric.config import MetricConfig
-from rock.sdk.agent.models.metric.type import MetricType
-from rock.sdk.agent.models.orchestrator_type import OrchestratorType
-from rock.sdk.agent.models.trial.config import (
+from rock.sdk.bench.models.metric.config import MetricConfig
+from rock.sdk.bench.models.metric.type import MetricType
+from rock.sdk.bench.models.orchestrator_type import OrchestratorType
+from rock.sdk.bench.models.trial.config import (
     AgentConfig,
     ArtifactConfig,
     TaskConfig,
     VerifierConfig,
 )
-from rock.sdk.agent.models.trial.config import (
+from rock.sdk.bench.models.trial.config import (
     EnvironmentConfig as HarborEnvironmentConfig,
 )
 
@@ -218,9 +218,9 @@ class TestRegistryDatasetConfig:
         assert d.n_tasks == 50
 
 
-class TestJobConfig:
+class TestHarborJobConfig:
     def test_defaults(self):
-        cfg = JobConfig(experiment_id="test-exp")
+        cfg = HarborJobConfig(experiment_id="test-exp")
         assert cfg.n_attempts == 1
         assert cfg.timeout_multiplier == 1.0
         assert cfg.debug is False
@@ -233,44 +233,40 @@ class TestJobConfig:
         assert cfg.artifacts == []
 
     def test_environment_defaults(self):
-        cfg = JobConfig(experiment_id="test-exp")
-        assert cfg.environment.setup_commands == []
-        assert cfg.environment.file_uploads == []
+        cfg = HarborJobConfig(experiment_id="test-exp")
+        assert cfg.environment.uploads == []
         assert cfg.environment.env == {}
-        assert cfg.environment.auto_stop is False
 
     def test_with_full_config(self):
-        cfg = JobConfig(
+        cfg = HarborJobConfig(
             job_name="test-job",
             experiment_id="test-exp",
             n_attempts=2,
             agents=[AgentConfig(name="terminus-2", model_name="hosted_vllm/m")],
             datasets=[RegistryDatasetConfig(registry=RemoteRegistryInfo(), name="terminal-bench", version="2.0")],
-            environment=RockEnvironmentConfig(setup_commands=["pip install harbor"]),
         )
         assert cfg.job_name == "test-job"
         assert cfg.n_attempts == 2
         assert len(cfg.agents) == 1
         assert cfg.agents[0].name == "terminus-2"
-        assert cfg.environment.setup_commands == ["pip install harbor"]
 
 
 class TestPublicAPI:
     def test_import_from_agent_package(self):
-        from rock.sdk.agent import Job, JobResult, JobStatus, TrialResult
+        from rock.sdk.bench import HarborTrialResult, Job, JobResult, JobStatus
 
         assert Job is not None
         assert JobResult is not None
         assert JobStatus is not None
-        assert TrialResult is not None
+        assert HarborTrialResult is not None
 
     def test_import_from_models_package(self):
-        from rock.sdk.agent.models import (
+        from rock.sdk.bench.models import (
             AgentConfig,
             EnvironmentType,
-            JobConfig,
+            HarborJobConfig,
         )
 
-        assert JobConfig is not None
+        assert HarborJobConfig is not None
         assert AgentConfig is not None
         assert EnvironmentType is not None

@@ -1,6 +1,5 @@
 import asyncio  # noqa: I001
 import json
-import time
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import Headers
 
@@ -23,8 +22,8 @@ from rock.actions import (
     UploadResponse,
     WriteFileResponse,
 )
+from rock.actions.sandbox.response import State
 from rock.actions.sandbox.sandbox_info import SandboxInfo
-from rock.admin.core.redis_key import ALIVE_PREFIX, alive_sandbox_key, timeout_sandbox_key
 from rock.admin.metrics.decorator import monitor_sandbox_operation
 from rock.admin.metrics.monitor import MetricsMonitor
 from rock.admin.proto.request import SandboxBashAction as BashAction
@@ -40,20 +39,20 @@ from rock.deployments.constants import Port
 from rock.deployments.status import ServiceStatus
 from rock.common.port_validation import validate_port_forward_port
 from rock.logger import init_logger
+from rock.sandbox.sandbox_meta_store import SandboxMetaStore
+from rock.sandbox.utils.timeout import SandboxTimeoutHelper
 from rock.sdk.common.exceptions import BadRequestRockError
 from rock.utils import EAGLE_EYE_TRACE_ID, trace_id_ctx_var
-from rock.utils.providers import RedisProvider
 
 logger = init_logger(__name__)
 
 
 class SandboxProxyService:
-    _redis_provider: RedisProvider = None
     _httpx_client = None
 
-    def __init__(self, rock_config: RockConfig, redis_provider: RedisProvider | None = None):
+    def __init__(self, rock_config: RockConfig, meta_store: SandboxMetaStore):
         self._rock_config = rock_config
-        self._redis_provider = redis_provider
+        self._meta_store = meta_store
         self.metrics_monitor = MetricsMonitor.create(
             export_interval_millis=20_000,
             metrics_endpoint=rock_config.runtime.metrics_endpoint,
@@ -162,31 +161,26 @@ class SandboxProxyService:
         return CommandResponse(**response)
 
     @monitor_sandbox_operation()
-    async def batch_get_sandbox_status_from_redis(self, sandbox_ids: list[str]) -> list[SandboxStatusResponse]:
-        if self._redis_provider is None:
-            logger.info("batch_get_sandbox_status_from_redis, redis provider is None, return empty")
-            return []
+    async def batch_get_sandbox_status(self, sandbox_ids: list[str]) -> list[SandboxStatusResponse]:
         if sandbox_ids is None:
             raise BadRequestRockError(message="sandbox_ids is None")
         if len(sandbox_ids) > self._batch_get_status_max_count:
             raise BadRequestRockError(
                 message=f"sandbox_ids count too large, max count is {self._batch_get_status_max_count}"
             )
-        logger.info(f"batch_get_sandbox_status_from_redis, sandbox_ids count is {len(sandbox_ids)}")
+        logger.info(f"batch_get_sandbox_status, sandbox_ids count is {len(sandbox_ids)}")
         results = []
-        alive_keys = [alive_sandbox_key(sandbox_id) for sandbox_id in sandbox_ids]
-        sandbox_infos: list[SandboxInfo] = await self._redis_provider.json_mget(alive_keys, "$")
+        sandbox_infos: list[SandboxInfo] = await self._meta_store.batch_get(sandbox_ids)
         for sandbox_info in sandbox_infos:
-            if sandbox_info:
-                results.append(SandboxStatusResponse.from_sandbox_info(sandbox_info))
-        logger.info(f"batch_get_sandbox_status_from_redis succ, result count is {len(results)}")
+            state = sandbox_info.get("state")
+            if state not in (State.RUNNING, State.PENDING):
+                continue
+            results.append(SandboxStatusResponse.from_sandbox_info(sandbox_info))
+        logger.info(f"batch_get_sandbox_status succ, result count is {len(results)}")
         return results
 
     @monitor_sandbox_operation()
     async def list_sandboxes(self, query_params: SandboxQueryParams) -> SandboxListResponse:
-        if self._redis_provider is None:
-            logger.warning("Redis provider is not available, list_sandboxes returning empty result")
-            return SandboxListResponse()
         page = int(query_params.pop("page", "1"))
         page_size = int(query_params.pop("page_size", "500"))
         if page < 1 or page_size < 1:
@@ -585,10 +579,10 @@ class SandboxProxyService:
             logger.info(f"Connection closed in {direction}: {e}")
 
     async def get_service_status(self, sandbox_id: str):
-        sandbox_status_dicts = await self._redis_provider.json_get(alive_sandbox_key(sandbox_id), "$")
-        if not sandbox_status_dicts or sandbox_status_dicts[0].get("host_ip") is None:
+        sandbox_info = await self._meta_store.get(sandbox_id)
+        if not sandbox_info or sandbox_info.get("host_ip") is None:
             raise Exception(f"sandbox {sandbox_id} not started")
-        return sandbox_status_dicts
+        return [sandbox_info]
 
     async def _send_request(
         self,
@@ -715,40 +709,28 @@ class SandboxProxyService:
             logger.error(f"Error forwarding message {direction}: {e}")
 
     async def _update_expire_time(self, sandbox_id):
-        if self._redis_provider is None:
+        timeout_info = await self._meta_store.get_timeout(sandbox_id)
+        if timeout_info is None:
             return
-        sandbox_status_dict = await self._redis_provider.json_get(alive_sandbox_key(sandbox_id), "$")
-        if not sandbox_status_dict or len(sandbox_status_dict) == 0:
-            logger.info(f"sandbox-{sandbox_id} is not alive, skip update expire time")
-            return
-        origin_info = await self._redis_provider.json_get(timeout_sandbox_key(sandbox_id), "$")
-        if origin_info is None or len(origin_info) == 0:
-            logger.info(f"sandbox-{sandbox_id} is not initialized, skip update expire time")
-            return
-        auto_clear_time: str = origin_info[0].get(env_vars.ROCK_SANDBOX_AUTO_CLEAR_TIME_KEY)
-        expire_time: int = int(time.time()) + int(auto_clear_time) * 60
-        logger.info(f"sandbox-{sandbox_id} update expire time: {expire_time}")
-        new_dict = {
-            env_vars.ROCK_SANDBOX_AUTO_CLEAR_TIME_KEY: auto_clear_time,
-            env_vars.ROCK_SANDBOX_EXPIRE_TIME_KEY: str(expire_time),
-        }
-        await self._redis_provider.json_set(timeout_sandbox_key(sandbox_id), "$", new_dict)
+        new_timeout = SandboxTimeoutHelper.refresh_timeout(timeout_info)
+        if new_timeout is not None:
+            await self._meta_store.update_timeout(sandbox_id, new_timeout)
 
     async def list_all_sandboxes_by_query_params(self, query_params: SandboxQueryParams):
-        all_keys = []
-        async for key in self._redis_provider.client.scan_iter(match=f"{ALIVE_PREFIX}*", count=1000):  # type: ignore
-            all_keys.append(key)
-        if not all_keys:
+        all_ids = []
+        async for sandbox_id in self._meta_store.iter_alive_sandbox_ids():
+            all_ids.append(sandbox_id)
+        if not all_ids:
             return []
 
         all_sandbox_data = []
         batch_size = self._batch_get_status_max_count
-        for i in range(0, len(all_keys), batch_size):
-            batch_keys = all_keys[i : i + batch_size]
-            sandbox_infos_list = await self._redis_provider.json_mget(batch_keys, "$")
-
+        for i in range(0, len(all_ids), batch_size):
+            batch_ids = all_ids[i : i + batch_size]
+            sandbox_infos_list = await self._meta_store.batch_get(batch_ids)
             for sandbox_info in sandbox_infos_list:
-                if not sandbox_info:
+                state = sandbox_info.get("state")
+                if state not in (State.RUNNING, State.PENDING):
                     continue
                 if self._matches_query_params(sandbox_info, query_params):
                     all_sandbox_data.append(SandboxListStatusResponse.from_sandbox_info(sandbox_info))

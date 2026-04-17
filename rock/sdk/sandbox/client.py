@@ -179,6 +179,7 @@ class Sandbox(AbstractSandbox):
             "use_kata_runtime": self.config.use_kata_runtime,
             "limit_cpus": self.config.limit_cpus,
             "sandbox_id": self.config.sandbox_id,
+            "auto_delete_seconds": self.config.auto_delete_seconds,
         }
         try:
             response = await HttpUtils.post(url, headers, data)
@@ -397,7 +398,7 @@ class Sandbox(AbstractSandbox):
         Args:
             cmd (str): The command to execute in the sandbox
             session (str, optional): The session identifier to run the command in.
-                If None, a temporary session will be created for nohup mode. Defaults to None.
+                If None, a temporary session will be created automatically. Defaults to None.
             wait_timeout (int, optional): Maximum time in seconds to wait for nohup command completion.
                 Defaults to 300.
             wait_interval (int, optional): Interval in seconds between process completion checks for nohup mode.
@@ -440,6 +441,9 @@ class Sandbox(AbstractSandbox):
             raise InvalidParameterRockException(f"Unsupported arun mode: {mode}")
 
         if mode == RunMode.NORMAL:
+            if session is None:
+                session = await self._generate_tmp_session_name()
+                await self.create_session(CreateBashSessionRequest(session=session))
             return await self._run_in_session(action=Action(command=cmd, session=session))
         if mode == RunMode.NOHUP:
             return await self._arun_with_nohup(
@@ -940,7 +944,7 @@ class Sandbox(AbstractSandbox):
         await self.stop()
 
     def __str__(self):
-        """返回用户友好的字符串表示，包含主要成员变量"""
+        """Return user-friendly string representation with key attributes."""
         return (
             f"Sandbox(sandbox_id={self._sandbox_id}, "
             f"host_name={self._host_name!r}, "
@@ -950,7 +954,7 @@ class Sandbox(AbstractSandbox):
         )
 
     def __repr__(self):
-        """返回开发者友好的字符串表示，包含所有成员变量"""
+        """Return developer-friendly string representation with all attributes."""
         return (
             f"Sandbox("
             f"config={self.config!r}, "

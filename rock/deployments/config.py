@@ -96,6 +96,9 @@ class DockerDeploymentConfig(DeploymentConfig):
     container_name: str | None = None
     """Custom name for the container. If None, a random name will be generated."""
 
+    auto_delete_seconds: int | None = None
+    """If set, the container will be automatically deleted after container stopped."""
+
     type: Literal["docker"] = "docker"
     """Deployment type discriminator for serialization/deserialization and CLI parsing. Should not be modified."""
 
@@ -176,7 +179,10 @@ class DockerDeploymentConfig(DeploymentConfig):
     @classmethod
     def from_request(cls, request: SandboxStartRequest) -> DeploymentConfig:
         """Create DockerDeploymentConfig from SandboxStartRequest"""
-        return cls(**request.model_dump(exclude={"sandbox_id"}), container_name=request.sandbox_id)
+        return cls(
+            **request.model_dump(exclude={"sandbox_id"}),
+            container_name=request.sandbox_id,
+        )
 
 
 class RayDeploymentConfig(DockerDeploymentConfig):

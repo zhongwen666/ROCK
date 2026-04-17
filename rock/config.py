@@ -78,6 +78,9 @@ class ProxyServiceConfig:
 
 @dataclass
 class DatabaseConfig:
+    # Supported URL formats:
+    #   SQLite:     sqlite:///relative/path.db  or  sqlite:////absolute/path.db
+    #   PostgreSQL: postgresql://user:password@host:port/dbname
     url: str = ""
 
 
@@ -143,8 +146,14 @@ class K8sConfig:
     api_qps: float = 20.0  # Queries per second
 
     # Watch configuration
-    watch_timeout_seconds: int = 60  # Watch timeout before reconnect
-    watch_reconnect_delay_seconds: int = 5  # Delay after watch failure
+    resync_period: int = 60  # How often (seconds) to perform a full re-list
+
+    # ============================================================================
+    # DEPRECATED: The following fields are deprecated and will be removed in a
+    # future version. Do NOT use them in new code.
+    # ============================================================================
+    watch_timeout_seconds: int = 60  # DEPRECATED: Use resync_period instead
+    watch_reconnect_delay_seconds: int = 5  # DEPRECATED: No longer used
 
 
 @dataclass
@@ -194,6 +203,7 @@ class RockConfig:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     proxy_service: ProxyServiceConfig = field(default_factory=ProxyServiceConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
     nacos_provider: NacosConfigProvider | None = None
 
     @classmethod
@@ -235,6 +245,8 @@ class RockConfig:
             kwargs["proxy_service"] = ProxyServiceConfig(**config["proxy_service"])
         if "scheduler" in config:
             kwargs["scheduler"] = SchedulerConfig(**config["scheduler"])
+        if "database" in config:
+            kwargs["database"] = DatabaseConfig(**config["database"])
 
         return cls(**kwargs)
 

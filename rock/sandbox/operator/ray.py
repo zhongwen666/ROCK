@@ -6,7 +6,6 @@ from rock import env_vars
 from rock.actions.sandbox.response import IsAliveResponse, State
 from rock.actions.sandbox.sandbox_info import SandboxInfo
 from rock.admin.core.ray_service import RayService
-from rock.admin.core.redis_key import alive_sandbox_key
 from rock.common.constants import GET_STATUS_SWITCH
 from rock.config import RuntimeConfig
 from rock.deployments.config import DockerDeploymentConfig
@@ -90,7 +89,7 @@ class RayOperator(AbstractOperator):
             actor: SandboxActor = await self._ray_service.async_ray_get_actor(self._get_actor_name(sandbox_id))
             sandbox_info: SandboxInfo = await self._ray_service.async_ray_get(actor.sandbox_info.remote())
             remote_status: ServiceStatus = await self._ray_service.async_ray_get(actor.get_status.remote())
-            sandbox_info["phases"] = remote_status.phases
+            sandbox_info["phases"] = {name: phase.to_dict() for name, phase in remote_status.phases.items()}
             sandbox_info["port_mapping"] = remote_status.get_port_mapping()
             alive = await self._ray_service.async_ray_get(actor.is_alive.remote())
             # TODO: sink update state according to is_alive logic into SandboxInfo
@@ -101,17 +100,9 @@ class RayOperator(AbstractOperator):
             redis_info = await self.get_sandbox_info_from_redis(sandbox_id)
             if redis_info:
                 redis_info.update(sandbox_info)
-                redis_info["phases"] = {name: phase.to_dict() for name, phase in remote_status.phases.items()}
                 return redis_info
             else:
                 return sandbox_info
-
-    async def get_sandbox_info_from_redis(self, sandbox_id: str) -> SandboxInfo:
-        sandbox_status = await self._redis_provider.json_get(alive_sandbox_key(sandbox_id), "$")
-        if sandbox_status and len(sandbox_status) > 0:
-            sandbox_info = sandbox_status[0]
-            return sandbox_info
-        return None
 
     async def stop(self, sandbox_id: str) -> bool:
         async with self._ray_service.get_ray_rwlock().read_lock():

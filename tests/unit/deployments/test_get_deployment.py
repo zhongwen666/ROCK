@@ -32,3 +32,23 @@ async def test_deployment_manager(rock_config):
     docker_deployment_config = await manager.init_config(config)
     deployment = manager.get_deployment(docker_deployment_config)
     assert isinstance(deployment, RayDeployment)
+
+
+class TestDeploymentManagerAutoDeleteSeconds:
+    async def test_auto_delete_seconds_none_uses_rock_config(self, rock_config):
+        manager = DeploymentManager(rock_config)
+        config = DockerDeploymentConfig(auto_delete_seconds=None)
+        result = await manager.init_config(config)
+        assert result.remove_container == rock_config.sandbox_config.remove_container_enabled
+
+    async def test_auto_delete_seconds_zero_sets_remove_container_true(self, rock_config):
+        manager = DeploymentManager(rock_config)
+        config = DockerDeploymentConfig(auto_delete_seconds=0)
+        result = await manager.init_config(config)
+        assert result.remove_container is True
+
+    async def test_auto_delete_seconds_positive_sets_remove_container_false(self, rock_config):
+        manager = DeploymentManager(rock_config)
+        config = DockerDeploymentConfig(auto_delete_seconds=300)
+        result = await manager.init_config(config)
+        assert result.remove_container is False

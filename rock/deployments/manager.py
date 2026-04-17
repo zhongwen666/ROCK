@@ -40,7 +40,10 @@ class DeploymentManager:
         await self.rock_config.update()
         docker_deployment_config.actor_resource = self.rock_config.sandbox_config.actor_resource
         docker_deployment_config.actor_resource_num = self.rock_config.sandbox_config.actor_resource_num
-        docker_deployment_config.remove_container = self.rock_config.sandbox_config.remove_container_enabled
+        if docker_deployment_config.auto_delete_seconds is None:
+            docker_deployment_config.remove_container = self.rock_config.sandbox_config.remove_container_enabled
+        else:
+            docker_deployment_config.remove_container = docker_deployment_config.auto_delete_seconds == 0
         return docker_deployment_config
 
     def get_deployment(self, config: DeploymentConfig) -> AbstractDeployment:

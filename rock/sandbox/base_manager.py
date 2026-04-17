@@ -5,32 +5,30 @@ import ray
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from rock.admin.core.redis_key import ALIVE_PREFIX
 from rock.admin.metrics.constants import MetricsConstants
 from rock.admin.metrics.monitor import MetricsMonitor, aggregate_metrics
 from rock.config import RockConfig
 from rock.deployments.manager import DeploymentManager
 from rock.logger import init_logger
+from rock.sandbox.sandbox_meta_store import SandboxMetaStore
 from rock.utils import get_executor
-from rock.utils.providers.redis_provider import RedisProvider
 
 logger = init_logger(__name__)
 
 
 class BaseManager:
     _check_job_bg_task: object = None
-    _redis_provider: RedisProvider = None
     rock_config: RockConfig = None
 
     def __init__(
         self,
         rock_config: RockConfig,
-        redis_provider: RedisProvider | None = None,
+        meta_store: SandboxMetaStore,
         enable_runtime_auto_clear: bool = False,
     ):
         self.rock_config = rock_config
         self._executor = get_executor()
-        self._redis_provider = redis_provider
+        self._meta_store = meta_store
         self.metrics_monitor = MetricsMonitor.create(
             export_interval_millis=20_000,
             metrics_endpoint=rock_config.runtime.metrics_endpoint,
@@ -91,16 +89,13 @@ class BaseManager:
     async def _collect_and_report_metrics_internal(self):
         """Collect and report metrics for all sandboxes"""
         overall_start = time.perf_counter()
-        if not self._redis_provider:
-            return
         await self._report_system_resource_metrics()
 
-        if not await self._redis_provider.pattern_exists(f"{ALIVE_PREFIX}*"):
+        sandbox_cnt, sandbox_meta = await self._collect_sandbox_meta()
+        if sandbox_cnt == 0:
             logger.debug("No sandboxes to monitor")
             self.metrics_monitor.record_gauge_by_name(MetricsConstants.SANDBOX_TOTAL_COUNT, 0)
             return
-
-        sandbox_cnt, sandbox_meta = await self._collect_sandbox_meta()
         aggregated_metrics = aggregate_metrics(sandbox_meta, "image")
         for image, count in aggregated_metrics.items():
             self.metrics_monitor.record_gauge_by_name(MetricsConstants.SANDBOX_COUNT_IMAGE, count, {"image": image})
@@ -113,7 +108,7 @@ class BaseManager:
         logger.debug(f"Metrics overall report rt:{overall_duration:.4f}s")
 
     async def _report_system_resource_metrics(self):
-        """汇报系统资源指标"""
+        """Report system resource metrics."""
         total_cpu, total_mem, available_cpu, available_mem = await self._collect_system_resource_metrics()
         self.metrics_monitor.record_gauge_by_name(MetricsConstants.TOTAL_CPU_RESOURCE, total_cpu)
         self.metrics_monitor.record_gauge_by_name(MetricsConstants.TOTAL_MEM_RESOURCE, total_mem)
@@ -121,7 +116,7 @@ class BaseManager:
         self.metrics_monitor.record_gauge_by_name(MetricsConstants.AVAILABLE_MEM_RESOURCE, available_mem)
 
     async def _collect_system_resource_metrics(self):
-        """收集系统资源指标"""
+        """Collect system resource metrics."""
         cluster_resources = ray.cluster_resources()
         available_resources = ray.available_resources()
         total_cpu = cluster_resources.get("CPU", 0)
@@ -133,16 +128,10 @@ class BaseManager:
     async def _collect_sandbox_meta(self) -> tuple[int, dict[str, dict[str, str]]]:
         meta: dict = {}
         cnt = 0
-        # type: ignore
-        async for key in self._redis_provider.client.scan_iter(match=f"{ALIVE_PREFIX}*", count=100):
-            sandbox_id = key.removeprefix(ALIVE_PREFIX)
+        async for sandbox_id in self._meta_store.iter_alive_sandbox_ids():
             cnt += 1
-            if self._sandbox_meta.get(sandbox_id) is not None:
-                try:
-                    image = self._sandbox_meta[sandbox_id]["image"]
-                except Exception:
-                    image = "default"
-                meta[sandbox_id] = {"image": image}
+            image = self._sandbox_meta.get(sandbox_id, {}).get("image", "default")
+            meta[sandbox_id] = {"image": image}
         return cnt, meta
 
     def stop_monitoring(self):

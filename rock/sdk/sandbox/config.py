@@ -44,6 +44,14 @@ class SandboxConfig(BaseConfig):
     registry_password: str | None = None
     use_kata_runtime: bool = False
     sandbox_id: str | None = None
+    auto_delete_seconds: int | None = None
+
+    @field_validator("auto_delete_seconds")
+    @classmethod
+    def validate_auto_delete_seconds(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("auto_delete_seconds must be >= 0")
+        return v
 
 
 class SandboxGroupConfig(SandboxConfig):

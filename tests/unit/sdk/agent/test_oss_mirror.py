@@ -3,15 +3,15 @@
 Covers:
 - OssMirrorConfig model fields and defaults
 - EnvironmentConfig.oss_mirror field
-- JobConfig top-level namespace/experiment_id fields
+- HarborJobConfig top-level namespace/experiment_id fields
 - to_harbor_yaml() serialization (namespace at top level)
 - from_yaml() deserialization
-- enable_oss_mirror() convenience method on JobConfig
+- enable_oss_mirror() convenience method on HarborJobConfig
 """
 
 import yaml
 
-from rock.sdk.agent.models.trial.config import EnvironmentConfig
+from rock.sdk.bench.models.trial.config import EnvironmentConfig
 
 # ---------------------------------------------------------------------------
 # 1. OssMirrorConfig 模型
@@ -20,17 +20,17 @@ from rock.sdk.agent.models.trial.config import EnvironmentConfig
 
 class TestOssMirrorConfig:
     def test_importable_from_trial_config(self):
-        from rock.sdk.agent.models.trial.config import OssMirrorConfig
+        from rock.sdk.envhub.config import OssMirrorConfig
 
         assert OssMirrorConfig is not None
 
     def test_importable_from_agent_package(self):
-        from rock.sdk.agent import OssMirrorConfig
+        from rock.sdk.envhub.config import OssMirrorConfig
 
         assert OssMirrorConfig is not None
 
     def test_default_is_disabled(self):
-        from rock.sdk.agent.models.trial.config import OssMirrorConfig
+        from rock.sdk.envhub.config import OssMirrorConfig
 
         cfg = OssMirrorConfig()
         assert cfg.enabled is False
@@ -41,7 +41,7 @@ class TestOssMirrorConfig:
         assert cfg.oss_endpoint is None
 
     def test_all_fields_settable(self):
-        from rock.sdk.agent.models.trial.config import OssMirrorConfig
+        from rock.sdk.envhub.config import OssMirrorConfig
 
         cfg = OssMirrorConfig(
             enabled=True,
@@ -70,7 +70,7 @@ class TestEnvironmentConfigOssMirror:
         assert env.oss_mirror is None
 
     def test_set_oss_mirror(self):
-        from rock.sdk.agent.models.trial.config import OssMirrorConfig
+        from rock.sdk.envhub.config import OssMirrorConfig
 
         mirror = OssMirrorConfig(enabled=True, oss_bucket="b1", oss_region="r1")
         env = EnvironmentConfig(oss_mirror=mirror)
@@ -89,21 +89,21 @@ class TestEnvironmentConfigOssMirror:
 
 
 # ---------------------------------------------------------------------------
-# 3. JobConfig 顶层 namespace/experiment_id 字段
+# 3. HarborJobConfig 顶层 namespace/experiment_id 字段
 # ---------------------------------------------------------------------------
 
 
-class TestJobConfigNamespaceFields:
+class TestHarborJobConfigNamespaceFields:
     def test_default_namespace_is_none(self):
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
-        cfg = JobConfig(job_name="test", experiment_id="test-exp")
+        cfg = HarborJobConfig(job_name="test", experiment_id="test-exp")
         assert cfg.namespace is None
 
     def test_namespace_settable_at_top_level(self):
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
-        cfg = JobConfig(job_name="test", namespace="team-rl", experiment_id="rl-step-42")
+        cfg = HarborJobConfig(job_name="test", namespace="team-rl", experiment_id="rl-step-42")
         assert cfg.namespace == "team-rl"
         assert cfg.experiment_id == "rl-step-42"
 
@@ -115,11 +115,12 @@ class TestJobConfigNamespaceFields:
 
 class TestToHarborYamlOssMirror:
     def test_namespace_at_top_level_in_yaml(self):
-        """namespace/experiment_id 序列化为 JobConfig 顶层字段。"""
-        from rock.sdk.agent.models.job.config import JobConfig
-        from rock.sdk.agent.models.trial.config import OssMirrorConfig, RockEnvironmentConfig
+        """namespace/experiment_id 序列化为 HarborJobConfig 顶层字段。"""
+        from rock.sdk.bench.models.job.config import HarborJobConfig
+        from rock.sdk.bench.models.trial.config import RockEnvironmentConfig
+        from rock.sdk.envhub.config import OssMirrorConfig
 
-        cfg = JobConfig(
+        cfg = HarborJobConfig(
             job_name="mirror-test",
             namespace="my-ns",
             experiment_id="exp-1",
@@ -141,14 +142,14 @@ class TestToHarborYamlOssMirror:
         oss = data["environment"]["oss_mirror"]
         assert oss["enabled"] is True
         assert oss["oss_bucket"] == "test-bucket"
-        assert "namespace" not in oss
-        assert "experiment_id" not in oss
+        assert oss["namespace"] == "my-ns"
+        assert oss["experiment_id"] == "exp-1"
 
     def test_disabled_oss_mirror_excluded_from_yaml(self):
         """When oss_mirror is default (disabled), it should not clutter the YAML."""
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
-        cfg = JobConfig(job_name="no-mirror", experiment_id="test-exp")
+        cfg = HarborJobConfig(job_name="no-mirror", experiment_id="test-exp")
         data = yaml.safe_load(cfg.to_harbor_yaml())
 
         env_data = data.get("environment", {})
@@ -163,7 +164,7 @@ class TestToHarborYamlOssMirror:
 class TestFromYamlOssMirror:
     def test_from_yaml_with_top_level_namespace(self, tmp_path):
         """新方式：namespace/experiment_id 在顶层。"""
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
         yaml_content = """\
 job_name: loaded-mirror
@@ -181,15 +182,15 @@ agents:
         yaml_file = tmp_path / "config.yaml"
         yaml_file.write_text(yaml_content)
 
-        cfg = JobConfig.from_yaml(str(yaml_file))
+        cfg = HarborJobConfig.from_yaml(str(yaml_file))
         assert cfg.namespace == "yaml-ns"
         assert cfg.experiment_id == "yaml-exp"
         assert cfg.environment.oss_mirror.enabled is True
         assert cfg.environment.oss_mirror.oss_bucket == "yaml-bucket"
 
-    def test_from_yaml_extra_keys_under_oss_mirror_ignored(self, tmp_path):
-        """YAML 中 oss_mirror 内多余的 namespace 等字段由 Pydantic 忽略。"""
-        from rock.sdk.agent.models.job.config import JobConfig
+    def test_from_yaml_oss_mirror_with_namespace_and_experiment_id(self, tmp_path):
+        """YAML 中 oss_mirror 内的 namespace/experiment_id 是合法字段。"""
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
         yaml_content = """\
 job_name: compat-mirror
@@ -208,15 +209,15 @@ agents:
         yaml_file = tmp_path / "config.yaml"
         yaml_file.write_text(yaml_content)
 
-        cfg = JobConfig.from_yaml(str(yaml_file))
+        cfg = HarborJobConfig.from_yaml(str(yaml_file))
         assert cfg.environment.oss_mirror.enabled is True
         assert cfg.environment.oss_mirror.oss_bucket == "yaml-bucket"
-        dump = cfg.environment.oss_mirror.model_dump(exclude_none=True)
-        assert "namespace" not in dump
-        assert "experiment_id" not in dump
+        assert cfg.environment.oss_mirror.namespace is not None
+        # experiment_id 被 _sync_experiment_id validator 同步为顶层值 "test-exp"
+        assert cfg.environment.oss_mirror.experiment_id == "test-exp"
 
     def test_from_yaml_without_oss_mirror(self, tmp_path):
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
         yaml_content = """\
 job_name: no-mirror
@@ -227,7 +228,7 @@ agents:
         yaml_file = tmp_path / "config.yaml"
         yaml_file.write_text(yaml_content)
 
-        cfg = JobConfig.from_yaml(str(yaml_file))
+        cfg = HarborJobConfig.from_yaml(str(yaml_file))
         assert cfg.environment.oss_mirror is None
 
 
@@ -238,9 +239,9 @@ agents:
 
 class TestEnableOssMirror:
     def test_enable_with_all_params(self):
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
-        cfg = JobConfig(job_name="conv-test", experiment_id="test-exp")
+        cfg = HarborJobConfig(job_name="conv-test", experiment_id="test-exp")
         cfg.enable_oss_mirror(
             oss_bucket="conv-bucket",
             oss_access_key_id="ak-conv",
@@ -253,9 +254,9 @@ class TestEnableOssMirror:
 
     def test_does_not_touch_namespace_or_experiment_id(self):
         """enable_oss_mirror 不修改顶层 namespace / experiment_id。"""
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
-        cfg = JobConfig(
+        cfg = HarborJobConfig(
             job_name="no-touch-test",
             namespace="preset-ns",
             experiment_id="preset-exp",
@@ -272,9 +273,9 @@ class TestEnableOssMirror:
 
     def test_enable_then_serialize_roundtrip(self):
         """to_harbor_yaml: 顶层 namespace / experiment_id 与 oss_mirror 独立设置。"""
-        from rock.sdk.agent.models.job.config import JobConfig
+        from rock.sdk.bench.models.job.config import HarborJobConfig
 
-        cfg = JobConfig(job_name="roundtrip", namespace="rt-ns", experiment_id="rt-exp")
+        cfg = HarborJobConfig(job_name="roundtrip", namespace="rt-ns", experiment_id="rt-exp")
         cfg.enable_oss_mirror(
             oss_bucket="rt-bucket",
             oss_access_key_id="ak-rt",
@@ -288,5 +289,3 @@ class TestEnableOssMirror:
         oss = data["environment"]["oss_mirror"]
         assert oss["enabled"] is True
         assert oss["oss_bucket"] == "rt-bucket"
-        assert "namespace" not in oss
-        assert "experiment_id" not in oss

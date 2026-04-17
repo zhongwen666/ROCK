@@ -1,23 +1,31 @@
 """Tests for proxy enhancements:
 1. WebSocket proxy supports user-specified port
 2. HTTP proxy supports all HTTP methods
+3. batch_get_sandbox_status legacy-states filtering
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fakeredis import aioredis
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse
 
+from rock.actions.sandbox.response import State
+from rock.admin.core.db_provider import DatabaseProvider
+from rock.admin.core.sandbox_table import SandboxTable
 from rock.admin.entrypoints.sandbox_proxy_api import (
     sandbox_proxy_router,
     set_sandbox_proxy_service,
     vnc_websocket_proxy,
     websocket_proxy,
 )
+from rock.config import DatabaseConfig, RockConfig
+from rock.sandbox.sandbox_meta_store import SandboxMetaStore
 from rock.sandbox.service.sandbox_proxy_service import SandboxProxyService
+from rock.utils.providers.redis_provider import RedisProvider
 
 
 def _make_mock_websocket(query_string: str = "", headers: dict | None = None) -> MagicMock:
@@ -1023,3 +1031,96 @@ class TestVncWebSocketProxy:
         call = svc.websocket_proxy.call_args
         port = call.kwargs.get("port") or (call.args[3] if len(call.args) > 3 else None)
         assert port == 8006
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# batch_get_sandbox_status — legacy-states filtering
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BASE_INFO = {
+    "sandbox_id": None,
+    "user_id": "u1",
+    "image": "python:3.11",
+    "experiment_id": "exp-1",
+    "namespace": "default",
+    "cluster_name": "c1",
+    "host_ip": "10.0.0.1",
+    "create_time": "2025-01-01T00:00:00Z",
+}
+
+
+@pytest.fixture
+async def _redis():
+    provider = RedisProvider(host=None, port=None, password="")
+    provider.client = aioredis.FakeRedis(decode_responses=True)
+    yield provider
+    await provider.close_pool()
+
+
+@pytest.fixture
+async def _db():
+    provider = DatabaseProvider(db_config=DatabaseConfig(url="sqlite+aiosqlite:///:memory:"))
+    await provider.init()
+    await provider.create_tables()
+    table = SandboxTable(provider)
+    yield table
+    await provider.close()
+
+
+@pytest.fixture
+def _svc(_redis, _db, rock_config):
+    meta_store = SandboxMetaStore(redis_provider=_redis, sandbox_table=_db)
+    return SandboxProxyService(rock_config, meta_store=meta_store), meta_store
+
+
+@pytest.fixture
+def rock_config():
+    return RockConfig()
+
+
+async def _seed(meta_store: SandboxMetaStore, sandbox_id: str, state: str) -> None:
+    info = {**_BASE_INFO, "sandbox_id": sandbox_id, "state": state}
+    await meta_store.create(sandbox_id, info)
+
+
+class TestBatchGetLegacyStates:
+    """batch_get_sandbox_status only returns RUNNING/PENDING sandboxes."""
+
+    async def test_running_sandbox_included(self, _svc):
+        svc, meta_store = _svc
+        await _seed(meta_store, "sb-running", State.RUNNING)
+        result = await svc.batch_get_sandbox_status(["sb-running"])
+        assert len(result) == 1
+        assert result[0].sandbox_id == "sb-running"
+
+    async def test_pending_sandbox_included(self, _svc):
+        svc, meta_store = _svc
+        await _seed(meta_store, "sb-pending", State.PENDING)
+        result = await svc.batch_get_sandbox_status(["sb-pending"])
+        assert len(result) == 1
+        assert result[0].sandbox_id == "sb-pending"
+
+    async def test_stopped_sandbox_excluded(self, _svc):
+        """stopped sandbox must be filtered out."""
+        svc, meta_store = _svc
+        await _seed(meta_store, "sb-stopped", State.STOPPED)
+        result = await svc.batch_get_sandbox_status(["sb-stopped"])
+        assert result == []
+
+    async def test_mixed_states_only_active_returned(self, _svc):
+        """Only running/pending survive; stopped is silently dropped."""
+        svc, meta_store = _svc
+        await _seed(meta_store, "sb-r", State.RUNNING)
+        await _seed(meta_store, "sb-p", State.PENDING)
+        await _seed(meta_store, "sb-s", State.STOPPED)
+        result = await svc.batch_get_sandbox_status(["sb-r", "sb-p", "sb-s"])
+        ids = {r.sandbox_id for r in result}
+        assert ids == {"sb-r", "sb-p"}
+
+    async def test_unknown_id_omitted(self, _svc):
+        """sandbox_id not in DB → entry absent from result (not None/empty status)."""
+        svc, meta_store = _svc
+        await _seed(meta_store, "sb-exists", State.RUNNING)
+        result = await svc.batch_get_sandbox_status(["sb-exists", "sb-ghost"])
+        assert len(result) == 1
+        assert result[0].sandbox_id == "sb-exists"

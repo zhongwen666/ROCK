@@ -9,8 +9,10 @@ from fakeredis import aioredis
 from kubernetes import client
 from ray.util.state import list_actors
 
+from rock.admin.core.db_provider import DatabaseProvider
 from rock.admin.core.ray_service import RayService
-from rock.config import K8sConfig, RockConfig
+from rock.admin.core.sandbox_table import SandboxTable
+from rock.config import DatabaseConfig, K8sConfig, RockConfig
 from rock.deployments.abstract import AbstractDeployment
 from rock.deployments.config import DeploymentConfig, DockerDeploymentConfig
 from rock.logger import init_logger
@@ -19,6 +21,7 @@ from rock.sandbox.operator.k8s.operator import K8sOperator
 from rock.sandbox.operator.k8s.template_loader import K8sTemplateLoader
 from rock.sandbox.operator.ray import RayOperator
 from rock.sandbox.sandbox_manager import SandboxManager
+from rock.sandbox.sandbox_meta_store import SandboxMetaStore
 from rock.sandbox.service.sandbox_proxy_service import SandboxProxyService
 from rock.utils.providers.redis_provider import RedisProvider
 
@@ -79,12 +82,28 @@ def ray_operator(ray_service, runtime_config):
 
 
 @pytest.fixture
+async def _memory_sandbox_table():
+    provider = DatabaseProvider(db_config=DatabaseConfig(url="sqlite+aiosqlite:///:memory:"))
+    await provider.init()
+    await provider.create_tables()
+    table = SandboxTable(provider)
+    yield table
+    await provider.close()
+
+
+@pytest.fixture
 async def sandbox_manager(
-    rock_config: RockConfig, redis_provider: RedisProvider, ray_init_shutdown, ray_service, ray_operator
+    rock_config: RockConfig,
+    redis_provider: RedisProvider,
+    ray_init_shutdown,
+    ray_service,
+    ray_operator,
+    _memory_sandbox_table: SandboxTable,
 ):
+    meta_store = SandboxMetaStore(redis_provider=redis_provider, sandbox_table=_memory_sandbox_table)
     sandbox_manager = SandboxManager(
         rock_config,
-        redis_provider=redis_provider,
+        meta_store=meta_store,
         ray_namespace=rock_config.ray.namespace,
         ray_service=ray_service,
         enable_runtime_auto_clear=rock_config.runtime.enable_auto_clear,
@@ -94,8 +113,11 @@ async def sandbox_manager(
 
 
 @pytest.fixture
-async def sandbox_proxy_service(rock_config: RockConfig, redis_provider: RedisProvider):
-    sandbox_proxy_service = SandboxProxyService(rock_config, redis_provider=redis_provider)
+async def sandbox_proxy_service(
+    rock_config: RockConfig, redis_provider: RedisProvider, _memory_sandbox_table: SandboxTable
+):
+    meta_store = SandboxMetaStore(redis_provider=redis_provider, sandbox_table=_memory_sandbox_table)
+    sandbox_proxy_service = SandboxProxyService(rock_config, meta_store=meta_store)
     return sandbox_proxy_service
 
 
@@ -214,8 +236,7 @@ def k8s_api_client(mock_api_client):
         plural="batchsandboxes",
         namespace="rock-test",
         qps=5.0,
-        watch_timeout_seconds=60,
-        watch_reconnect_delay_seconds=5,
+        resync_period=60,
     )
 
 
@@ -248,3 +269,159 @@ def deployment_config():
         container_name="test-sandbox",
         template_name="default",
     )
+
+
+# ---------------------------------------------------------------------------
+# Docker container fixtures - shared across all unit test subdirectories
+# (lazy-import docker so non-Docker tests don't require the package)
+# ---------------------------------------------------------------------------
+
+_PG_IMAGE = "postgres:16-alpine"
+_PG_USER = "rock_test"
+_PG_PASSWORD = "rock_test_pass"
+_PG_DB = "rock_test_db"
+_PG_PORT = 5432
+_REDIS_IMAGE = "redis/redis-stack-server:latest"
+_REDIS_PORT = 6379
+
+
+def _docker_keep_containers() -> bool:
+    import os
+
+    return os.getenv("ROCK_TEST_KEEP_DOCKER_CONTAINERS", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _docker_detect_network(client) -> str | None:
+    import socket
+
+    import docker
+
+    hostname = socket.gethostname()
+    try:
+        current = client.containers.get(hostname)
+        networks = current.attrs["NetworkSettings"]["Networks"]
+        if "bridge" in networks:
+            return "bridge"
+        return next(iter(networks), None)
+    except (docker.errors.NotFound, docker.errors.APIError):
+        return None
+
+
+def _docker_resolve_host_port(container, network_name: str | None, internal_port: int) -> tuple[str, int]:
+    container.reload()
+    if network_name:
+        host = container.attrs["NetworkSettings"]["Networks"][network_name]["IPAddress"]
+        return host, internal_port
+    host = "127.0.0.1"
+    port = int(container.ports[f"{internal_port}/tcp"][0]["HostPort"])
+    return host, port
+
+
+def _docker_start_container(client, image, name, network_name, internal_port, **extra_kwargs):
+    keep = _docker_keep_containers()
+    run_kwargs = {"image": image, "name": name, "detach": True, "remove": not keep, **extra_kwargs}
+    if network_name:
+        run_kwargs["network"] = network_name
+    else:
+        run_kwargs["ports"] = {f"{internal_port}/tcp": None}
+    return client.containers.run(**run_kwargs)
+
+
+@pytest.fixture(scope="session")
+def pg_container():
+    """Start a PostgreSQL 16 Docker container for the test session."""
+    import uuid
+
+    import docker
+
+    client = docker.from_env()
+    container_name = f"rock-test-pg-{uuid.uuid4().hex[:8]}"
+    network_name = _docker_detect_network(client)
+    container = _docker_start_container(
+        client,
+        image=_PG_IMAGE,
+        name=container_name,
+        network_name=network_name,
+        internal_port=_PG_PORT,
+        environment={
+            "POSTGRES_USER": _PG_USER,
+            "POSTGRES_PASSWORD": _PG_PASSWORD,
+            "POSTGRES_DB": _PG_DB,
+        },
+    )
+    try:
+        # wait for readiness
+        import time as _t
+
+        deadline = _t.time() + 30
+        while _t.time() < deadline:
+            code, _ = container.exec_run(f"pg_isready -U {_PG_USER}")
+            if code == 0:
+                break
+            _t.sleep(0.5)
+        else:
+            raise TimeoutError("PostgreSQL container did not become ready within 30s")
+
+        # Confirm with a real SQL query to close the startup race window.
+        while _t.time() < deadline:
+            code, _ = container.exec_run(f'psql -U {_PG_USER} -d {_PG_DB} -c "SELECT 1"')
+            if code == 0:
+                break
+            _t.sleep(0.5)
+        else:
+            raise TimeoutError("PostgreSQL: pg_isready OK but SELECT 1 still failing")
+
+        host, port = _docker_resolve_host_port(container, network_name, _PG_PORT)
+        yield {
+            "host": host,
+            "port": port,
+            "user": _PG_USER,
+            "password": _PG_PASSWORD,
+            "database": _PG_DB,
+            "url": f"postgresql://{_PG_USER}:{_PG_PASSWORD}@{host}:{port}/{_PG_DB}",
+        }
+    finally:
+        if not _docker_keep_containers():
+            try:
+                container.stop(timeout=5)
+            except Exception:
+                pass
+
+
+@pytest.fixture(scope="session")
+def redis_container():
+    """Start a Redis Stack Docker container (with RedisJSON) for the test session."""
+    import uuid
+
+    import docker
+
+    client = docker.from_env()
+    container_name = f"rock-test-redis-{uuid.uuid4().hex[:8]}"
+    network_name = _docker_detect_network(client)
+    container = _docker_start_container(
+        client,
+        image=_REDIS_IMAGE,
+        name=container_name,
+        network_name=network_name,
+        internal_port=_REDIS_PORT,
+    )
+    try:
+        import time as _t
+
+        deadline = _t.time() + 30
+        while _t.time() < deadline:
+            code, output = container.exec_run("redis-cli ping")
+            if code == 0 and b"PONG" in output:
+                break
+            _t.sleep(0.5)
+        else:
+            raise TimeoutError("Redis container did not become ready within 30s")
+
+        host, port = _docker_resolve_host_port(container, network_name, _REDIS_PORT)
+        yield {"host": host, "port": port, "password": "", "url": f"redis://{host}:{port}"}
+    finally:
+        if not _docker_keep_containers():
+            try:
+                container.stop(timeout=5)
+            except Exception:
+                pass
