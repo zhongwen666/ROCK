@@ -39,6 +39,10 @@ class SandboxStartRequest(BaseModel):
     """Whether to use kata container runtime (io.containerd.kata.v2) instead of --privileged mode."""
     auto_delete_seconds: int | None = None
     """The time for automatic container deletion, with the unit being seconds."""
+    num_gpus: float | None = None
+    """Number of GPUs to allocate. Supports fractional values (e.g. 0.5 for GPU sharing)."""
+    accelerator_type: str | None = None
+    """GPU accelerator type (e.g. 'A100', 'V100'). If not specified, any available GPU will be used."""
 
 
 class SandboxCommand(Command):

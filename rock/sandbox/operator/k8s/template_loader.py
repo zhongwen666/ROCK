@@ -2,50 +2,15 @@
 
 import copy
 import json
-from collections.abc import Mapping
 from typing import Any
 
 import jinja2
 
 from rock.logger import init_logger
 from rock.sandbox.operator.k8s.constants import K8sConstants
+from rock.utils.jinja_render import render_node
 
 logger = init_logger(__name__)
-
-_DROP = object()  # sentinel: rendered placeholder collapsed to empty
-
-
-def _render_node(node: Any, env: jinja2.Environment, ctx: Mapping[str, Any]) -> Any:
-    """Recursively render a template node with Jinja2.
-
-    Strings containing ``{{`` are rendered against ``ctx``; an empty
-    rendered result yields the ``_DROP`` sentinel so the caller can
-    remove the key (in a dict) or skip the element (in a list).
-    """
-    if isinstance(node, str):
-        if "{{" not in node:
-            return node
-        rendered = env.from_string(node).render(**ctx).strip()
-        if rendered == "":
-            return _DROP
-        return rendered
-    if isinstance(node, dict):
-        result: dict[Any, Any] = {}
-        for k, v in node.items():
-            rendered = _render_node(v, env, ctx)
-            if rendered is _DROP:
-                continue
-            result[k] = rendered
-        return result
-    if isinstance(node, list):
-        result_list: list[Any] = []
-        for item in node:
-            rendered = _render_node(item, env, ctx)
-            if rendered is _DROP:
-                continue
-            result_list.append(rendered)
-        return result_list
-    return node
 
 
 class K8sTemplateLoader:
@@ -150,7 +115,7 @@ class K8sTemplateLoader:
             "accelerator_type": accelerator_type if accelerator_type is not None else "",
         }
 
-        rendered = _render_node(config, self._jinja_env, ctx)
+        rendered = render_node(config, self._jinja_env, ctx)
 
         enable_resource_speedup = rendered.get("enable_resource_speedup", True)
         pod_template = rendered.get("template", {})

@@ -553,6 +553,8 @@ class BatchSandboxProvider(K8sProvider):
             image=config.image,
             cpus=config.cpus,
             memory=self._normalize_memory(config.memory),
+            num_gpus=config.num_gpus,
+            accelerator_type=str(config.accelerator_type.value) if config.accelerator_type else None,
         )
 
         logger.debug(

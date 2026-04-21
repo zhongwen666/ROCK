@@ -169,30 +169,13 @@ class TestK8sTemplateLoader:
                                 "image": "{{ image | default('cuda:12', true) }}",
                                 "resources": {
                                     "limits": {
-                                        "alibabacloud.com/gpu": ("{{ (num_gpus * 100) if num_gpus else '' }}"),
-                                        "alibabacloud.com/gpu-mem-ratio": (
-                                            "{{ (num_gpus * 100) if num_gpus else '' }}"
-                                        ),
+                                        "nvidia.com/gpu": ("{{ num_gpus if num_gpus else '' }}"),
                                     }
                                 },
                             }
                         ],
-                        "affinity": {
-                            "nodeAffinity": {
-                                "requiredDuringSchedulingIgnoredDuringExecution": {
-                                    "nodeSelectorTerms": [
-                                        {
-                                            "matchExpressions": [
-                                                {
-                                                    "key": "alibabacloud.com/gpu-card-model-detail",
-                                                    "operator": "In",
-                                                    "values": ["{{ accelerator_type }}"],
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                }
-                            }
+                        "nodeSelector": {
+                            "nvidia.com/gpu.product": "{{ accelerator_type }}",
                         },
                     }
                 },
@@ -208,12 +191,10 @@ class TestK8sTemplateLoader:
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
-        assert container["resources"]["limits"]["alibabacloud.com/gpu"] == "400"
-        assert container["resources"]["limits"]["alibabacloud.com/gpu-mem-ratio"] == "400"
+        assert container["resources"]["limits"]["nvidia.com/gpu"] == "4"
 
-        affinity = manifest["spec"]["template"]["spec"]["affinity"]
-        terms = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
-        assert terms[0]["matchExpressions"][0]["values"] == ["A100"]
+        nodeSelector = manifest["spec"]["template"]["spec"]["nodeSelector"]
+        assert nodeSelector["nvidia.com/gpu.product"] == "A100"
 
     def test_build_manifest_drops_gpu_when_no_gpu(self):
         """When num_gpus omitted, GPU keys collapse out of resources.limits."""
@@ -229,10 +210,7 @@ class TestK8sTemplateLoader:
                                 "resources": {
                                     "limits": {
                                         "cpu": "{{ cpus | default('2', true) }}",
-                                        "alibabacloud.com/gpu": ("{{ (num_gpus * 100) if num_gpus else '' }}"),
-                                        "alibabacloud.com/gpu-mem-ratio": (
-                                            "{{ (num_gpus * 100) if num_gpus else '' }}"
-                                        ),
+                                        "nvidia.com/gpu": ("{{ num_gpus if num_gpus else '' }}"),
                                     }
                                 },
                             }
@@ -249,102 +227,4 @@ class TestK8sTemplateLoader:
         # cpu has a default → present
         assert limits["cpu"] == "2"
         # GPU placeholders rendered to empty → keys dropped
-        assert "alibabacloud.com/gpu" not in limits
-        assert "alibabacloud.com/gpu-mem-ratio" not in limits
-
-
-class TestRenderNode:
-    """Unit tests for the private _render_node helper."""
-
-    def _make_env(self):
-        from jinja2 import Environment, StrictUndefined
-
-        return Environment(undefined=StrictUndefined, autoescape=False)
-
-    def test_string_without_placeholder_returned_as_is(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        assert _render_node("hello world", env, {}) == "hello world"
-        assert _render_node("/bin/sh -c 'echo'", env, {"x": "y"}) == "/bin/sh -c 'echo'"
-
-    def test_simple_variable_substitution(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        assert _render_node("{{ a }}", env, {"a": "x"}) == "x"
-        assert _render_node("prefix-{{ a }}-suffix", env, {"a": "v"}) == "prefix-v-suffix"
-
-    def test_arithmetic_expression(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        assert _render_node("{{ n * 100 }}", env, {"n": 4}) == "400"
-
-    def test_default_filter_with_boolean_true(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        # boolean=true makes default trigger on falsy values (incl. "" / None)
-        assert _render_node("{{ a | default('d', true) }}", env, {"a": ""}) == "d"
-        assert _render_node("{{ a | default('d', true) }}", env, {"a": "real"}) == "real"
-
-    def test_dict_renders_each_value(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        node = {"image": "{{ image }}", "name": "main"}
-        assert _render_node(node, env, {"image": "ubuntu:22.04"}) == {
-            "image": "ubuntu:22.04",
-            "name": "main",
-        }
-
-    def test_dict_drops_keys_rendered_to_empty(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        node = {"cpu": "{{ cpus }}", "memory": "{{ memory }}", "static": "keep"}
-        result = _render_node(node, env, {"cpus": "", "memory": "8Gi"})
-        assert result == {"memory": "8Gi", "static": "keep"}
-
-    def test_list_renders_each_element(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        node = ["a", "{{ x }}", "c"]
-        assert _render_node(node, env, {"x": "b"}) == ["a", "b", "c"]
-
-    def test_list_drops_elements_rendered_to_empty(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        node = ["{{ a }}", "keep", "{{ b }}"]
-        assert _render_node(node, env, {"a": "", "b": "ok"}) == ["keep", "ok"]
-
-    def test_nested_dict_and_list_render_recursively(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        node = {"spec": {"containers": [{"name": "main", "image": "{{ image }}", "args": ["--port", "{{ port }}"]}]}}
-        ctx = {"image": "alpine:3.18", "port": "8080"}
-        assert _render_node(node, env, ctx) == {
-            "spec": {"containers": [{"name": "main", "image": "alpine:3.18", "args": ["--port", "8080"]}]}
-        }
-
-    def test_non_string_scalars_pass_through(self):
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        assert _render_node(42, env, {}) == 42
-        assert _render_node(3.14, env, {}) == 3.14
-        assert _render_node(True, env, {}) is True
-        assert _render_node(None, env, {}) is None
-
-    def test_strict_undefined_raises_on_unknown_variable(self):
-        import jinja2
-
-        from rock.sandbox.operator.k8s.template_loader import _render_node
-
-        env = self._make_env()
-        with pytest.raises(jinja2.UndefinedError):
-            _render_node("{{ typo_var }}", env, {"correct_var": "x"})
+        assert "nvidia.com/gpu" not in limits

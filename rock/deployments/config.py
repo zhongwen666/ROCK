@@ -7,6 +7,7 @@ provides settings specific to its deployment environment.
 """
 
 from abc import abstractmethod
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -15,6 +16,24 @@ from rock.admin.proto.request import SandboxStartRequest
 from rock.config import RuntimeConfig
 from rock.deployments.abstract import AbstractDeployment
 from rock.utils import REQUEST_TIMEOUT_SECONDS
+
+
+class AcceleratorType(str, Enum):
+    """GPU accelerator type, following Ray's naming convention.
+
+    See: https://docs.ray.io/en/latest/ray-core/accelerator-types.html
+    """
+
+    V100 = "V100"
+    T4 = "T4"
+    A10G = "A10G"
+    L4 = "L4"
+    L40S = "L40S"
+    A100 = "A100"
+    A100_80G = "A100-80G"
+    H100 = "H100"
+    H200 = "H200"
+    B200 = "B200"
 
 
 class DeploymentConfig(BaseModel):
@@ -129,6 +148,12 @@ class DockerDeploymentConfig(DeploymentConfig):
 
     runtime_config: RuntimeConfig = Field(default_factory=RuntimeConfig)
     """Runtime configuration settings."""
+
+    num_gpus: float | None = None
+    """Number of GPUs to allocate. Supports fractional values (e.g. 0.5 for GPU sharing)."""
+
+    accelerator_type: AcceleratorType | None = None
+    """GPU accelerator type. If not specified, any available GPU will be used."""
 
     extended_params: dict[str, str] = Field(default_factory=dict)
     """Generic extension field for storing custom string key-value pairs."""
