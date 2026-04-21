@@ -173,3 +173,17 @@ class TestRenderNode:
         env = self._make_env()
         assert _render_node("{{ a }}", env, {"a": "x"}) == "x"
         assert _render_node("prefix-{{ a }}-suffix", env, {"a": "v"}) == "prefix-v-suffix"
+
+    def test_arithmetic_expression(self):
+        from rock.sandbox.operator.k8s.template_loader import _render_node
+
+        env = self._make_env()
+        assert _render_node("{{ n * 100 }}", env, {"n": 4}) == "400"
+
+    def test_default_filter_with_boolean_true(self):
+        from rock.sandbox.operator.k8s.template_loader import _render_node
+
+        env = self._make_env()
+        # boolean=true makes default trigger on falsy values (incl. "" / None)
+        assert _render_node("{{ a | default('d', true) }}", env, {"a": ""}) == "d"
+        assert _render_node("{{ a | default('d', true) }}", env, {"a": "real"}) == "real"
