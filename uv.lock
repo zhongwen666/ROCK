@@ -2,10 +2,14 @@ version = 1
 revision = 3
 requires-python = ">=3.10, <4.0"
 resolution-markers = [
-    "python_full_version >= '3.13'",
-    "python_full_version == '3.12.*'",
-    "python_full_version == '3.11.*'",
-    "python_full_version < '3.11'",
+    "python_full_version >= '3.13' and sys_platform != 'win32'",
+    "python_full_version >= '3.13' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.11.*' and sys_platform != 'win32'",
+    "python_full_version == '3.11.*' and sys_platform == 'win32'",
+    "python_full_version < '3.11' and sys_platform != 'win32'",
+    "python_full_version < '3.11' and sys_platform == 'win32'",
 ]
 
 [[package]]
@@ -940,7 +944,8 @@ name = "contourpy"
 version = "1.3.2"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "python_full_version < '3.11' and sys_platform != 'win32'",
+    "python_full_version < '3.11' and sys_platform == 'win32'",
 ]
 dependencies = [
     { name = "numpy", marker = "python_full_version < '3.11'" },
@@ -1010,9 +1015,12 @@ name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
 resolution-markers = [
-    "python_full_version >= '3.13'",
-    "python_full_version == '3.12.*'",
-    "python_full_version == '3.11.*'",
+    "python_full_version >= '3.13' and sys_platform != 'win32'",
+    "python_full_version >= '3.13' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.11.*' and sys_platform != 'win32'",
+    "python_full_version == '3.11.*' and sys_platform == 'win32'",
 ]
 dependencies = [
     { name = "numpy", marker = "python_full_version >= '3.11'" },
@@ -4063,22 +4071,22 @@ admin = [
     { name = "alibabacloud-cr20181201" },
     { name = "apscheduler" },
     { name = "asyncpg" },
-    { name = "bashlex" },
+    { name = "bashlex", marker = "sys_platform != 'win32'" },
     { name = "boto3" },
     { name = "cryptography" },
     { name = "fakeredis", extra = ["json"] },
     { name = "fastapi" },
-    { name = "gem-llm" },
+    { name = "gem-llm", marker = "sys_platform != 'win32'" },
     { name = "kubernetes" },
     { name = "nacos-sdk-python" },
     { name = "numpy" },
-    { name = "pexpect" },
+    { name = "pexpect", marker = "sys_platform != 'win32'" },
     { name = "pip" },
     { name = "psutil" },
     { name = "ray", extra = ["default"] },
     { name = "redis" },
     { name = "sqlmodel" },
-    { name = "twisted" },
+    { name = "twisted", marker = "sys_platform != 'win32'" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -4089,7 +4097,7 @@ all = [
     { name = "alibabacloud-cr20181201" },
     { name = "apscheduler" },
     { name = "asyncpg" },
-    { name = "bashlex" },
+    { name = "bashlex", marker = "sys_platform != 'win32'" },
     { name = "boto3" },
     { name = "cryptography" },
     { name = "docker" },
@@ -4099,14 +4107,14 @@ all = [
     { name = "kubernetes" },
     { name = "nacos-sdk-python" },
     { name = "numpy" },
-    { name = "pexpect" },
+    { name = "pexpect", marker = "sys_platform != 'win32'" },
     { name = "pip" },
     { name = "psutil" },
     { name = "ray", extra = ["default"] },
     { name = "redis" },
     { name = "sqlmodel" },
     { name = "swebench" },
-    { name = "twisted" },
+    { name = "twisted", marker = "sys_platform != 'win32'" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -4123,13 +4131,13 @@ model-service = [
     { name = "uvicorn" },
 ]
 rocklet = [
-    { name = "bashlex" },
+    { name = "bashlex", marker = "sys_platform != 'win32'" },
     { name = "fastapi" },
-    { name = "gem-llm" },
+    { name = "gem-llm", marker = "sys_platform != 'win32'" },
     { name = "numpy" },
-    { name = "pexpect" },
+    { name = "pexpect", marker = "sys_platform != 'win32'" },
     { name = "psutil" },
-    { name = "twisted" },
+    { name = "twisted", marker = "sys_platform != 'win32'" },
     { name = "uvicorn" },
 ]
 sandbox-actor = [
@@ -4168,7 +4176,7 @@ requires-dist = [
     { name = "apscheduler", marker = "extra == 'admin'" },
     { name = "apscheduler", marker = "extra == 'sandbox-actor'", specifier = ">=3.11.0" },
     { name = "asyncpg", marker = "extra == 'admin'" },
-    { name = "bashlex", marker = "extra == 'rocklet'" },
+    { name = "bashlex", marker = "sys_platform != 'win32' and extra == 'rocklet'" },
     { name = "boto3", marker = "extra == 'admin'" },
     { name = "build" },
     { name = "cryptography", marker = "extra == 'admin'", specifier = "==39.0.1" },
@@ -4176,8 +4184,8 @@ requires-dist = [
     { name = "fakeredis", extras = ["json"], marker = "extra == 'admin'" },
     { name = "fastapi", marker = "extra == 'model-service'" },
     { name = "fastapi", marker = "extra == 'rocklet'" },
+    { name = "gem-llm", marker = "sys_platform != 'win32' and extra == 'rocklet'", specifier = ">=0.1.0" },
     { name = "gem-llm", marker = "extra == 'builder'", specifier = ">=0.1.0" },
-    { name = "gem-llm", marker = "extra == 'rocklet'", specifier = ">=0.1.0" },
     { name = "gem-llm", marker = "extra == 'sandbox-actor'", specifier = ">=0.1.0" },
     { name = "httpx" },
     { name = "kubernetes", marker = "extra == 'admin'", specifier = ">=35.0.0" },
@@ -4189,7 +4197,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-prometheus" },
     { name = "opentelemetry-sdk" },
     { name = "oss2" },
-    { name = "pexpect", marker = "extra == 'rocklet'" },
+    { name = "pexpect", marker = "sys_platform != 'win32' and extra == 'rocklet'" },
     { name = "pip", marker = "extra == 'admin'" },
     { name = "psutil", marker = "extra == 'model-service'" },
     { name = "psutil", marker = "extra == 'rocklet'" },
@@ -4209,7 +4217,7 @@ requires-dist = [
     { name = "sqlmodel", marker = "extra == 'sandbox-actor'" },
     { name = "swebench", marker = "extra == 'builder'" },
     { name = "swebench", marker = "extra == 'model-service'" },
-    { name = "twisted", marker = "extra == 'rocklet'" },
+    { name = "twisted", marker = "sys_platform != 'win32' and extra == 'rocklet'" },
     { name = "tzdata" },
     { name = "uuid" },
     { name = "uvicorn", marker = "extra == 'model-service'" },
@@ -5427,25 +5435,21 @@ wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/d8/c1/eec33cc9f847ebeb0bc6234d7d45fe3fc0a6fe8fc5b5e6be0442bd2c684d/zope_interface-8.0.1-cp310-cp310-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:758803806b962f32c87b31bb18c298b022965ba34fe532163831cc39118c24ab" },
     { url = "https://mirrors.aliyun.com/pypi/packages/58/7d/1e3476a1ef0175559bd8492dc7bb921ad0df5b73861d764b1f824ad5484a/zope_interface-8.0.1-cp310-cp310-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:f8e88f35f86bbe8243cad4b2972deef0fdfca0a0723455abbebdc83bbab96b69" },
     { url = "https://mirrors.aliyun.com/pypi/packages/bc/67/ba5ea98ff23f723c5cbe7db7409f2e43c9fe2df1ced67881443c01e64478/zope_interface-8.0.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:7844765695937d9b0d83211220b72e2cf6ac81a08608ad2b58f2c094af498d83" },
-    { url = "https://mirrors.aliyun.com/pypi/packages/2b/a7/b1b8b6c13fba955c043cdee409953ee85f652b106493e2e931a84f95c1aa/zope_interface-8.0.1-cp310-cp310-win_amd64.whl", hash = "sha256:64fa7b206dd9669f29d5c1241a768bebe8ab1e8a4b63ee16491f041e058c09d0" },
     { url = "https://mirrors.aliyun.com/pypi/packages/f2/2f/c10c739bcb9b072090c97c2e08533777497190daa19d190d72b4cce9c7cb/zope_interface-8.0.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:4bd01022d2e1bce4a4a4ed9549edb25393c92e607d7daa6deff843f1f68b479d" },
     { url = "https://mirrors.aliyun.com/pypi/packages/b5/e1/9845ac3697f108d9a1af6912170c59a23732090bbfb35955fe77e5544955/zope_interface-8.0.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:29be8db8b712d94f1c05e24ea230a879271d787205ba1c9a6100d1d81f06c69a" },
     { url = "https://mirrors.aliyun.com/pypi/packages/f2/49/6573bc8b841cfab18e80c8e8259f1abdbbf716140011370de30231be79ad/zope_interface-8.0.1-cp311-cp311-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:51ae1b856565b30455b7879fdf0a56a88763b401d3f814fa9f9542d7410dbd7e" },
     { url = "https://mirrors.aliyun.com/pypi/packages/e2/fd/908b0fd4b1ab6e412dfac9bd2b606f2893ef9ba3dd36d643f5e5b94c57b3/zope_interface-8.0.1-cp311-cp311-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:d2e7596149cb1acd1d4d41b9f8fe2ffc0e9e29e2e91d026311814181d0d9efaf" },
     { url = "https://mirrors.aliyun.com/pypi/packages/dc/78/8419a2b4e88410520ed4b7f93bbd25a6d4ae66c4e2b131320f2b90f43077/zope_interface-8.0.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b2737c11c34fb9128816759864752d007ec4f987b571c934c30723ed881a7a4f" },
-    { url = "https://mirrors.aliyun.com/pypi/packages/e5/90/caf68152c292f1810e2bd3acd2177badf08a740aa8a348714617d6c9ad0b/zope_interface-8.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:cf66e4bf731aa7e0ced855bb3670e8cda772f6515a475c6a107bad5cb6604103" },
     { url = "https://mirrors.aliyun.com/pypi/packages/dc/a6/0f08713ddda834c428ebf97b2a7fd8dea50c0100065a8955924dbd94dae8/zope_interface-8.0.1-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:115f27c1cc95ce7a517d960ef381beedb0a7ce9489645e80b9ab3cbf8a78799c" },
     { url = "https://mirrors.aliyun.com/pypi/packages/e9/5e/d423045f54dc81e0991ec655041e7a0eccf6b2642535839dd364b35f4d7f/zope_interface-8.0.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:af655c573b84e3cb6a4f6fd3fbe04e4dc91c63c6b6f99019b3713ef964e589bc" },
     { url = "https://mirrors.aliyun.com/pypi/packages/c6/43/39d4bb3f7a80ebd261446792493cfa4e198badd47107224f5b6fe1997ad9/zope_interface-8.0.1-cp312-cp312-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:23f82ef9b2d5370750cc1bf883c3b94c33d098ce08557922a3fbc7ff3b63dfe1" },
     { url = "https://mirrors.aliyun.com/pypi/packages/da/29/49effcff64ef30731e35520a152a9dfcafec86cf114b4c2aff942e8264ba/zope_interface-8.0.1-cp312-cp312-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:35a1565d5244997f2e629c5c68715b3d9d9036e8df23c4068b08d9316dcb2822" },
     { url = "https://mirrors.aliyun.com/pypi/packages/c7/39/b947673ec9a258eeaa20208dd2f6127d9fbb3e5071272a674ebe02063a78/zope_interface-8.0.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:029ea1db7e855a475bf88d9910baab4e94d007a054810e9007ac037a91c67c6f" },
-    { url = "https://mirrors.aliyun.com/pypi/packages/8f/ee/eed6efd1fc3788d1bef7a814e0592d8173b7fe601c699b935009df035fc2/zope_interface-8.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:0beb3e7f7dc153944076fcaf717a935f68d39efa9fce96ec97bafcc0c2ea6cab" },
     { url = "https://mirrors.aliyun.com/pypi/packages/5f/dc/3c12fca01c910c793d636ffe9c0984e0646abaf804e44552070228ed0ede/zope_interface-8.0.1-cp313-cp313-macosx_10_9_x86_64.whl", hash = "sha256:c7cc027fc5c61c5d69e5080c30b66382f454f43dc379c463a38e78a9c6bab71a" },
     { url = "https://mirrors.aliyun.com/pypi/packages/46/71/6127b7282a3e380ca927ab2b40778a9c97935a4a57a2656dadc312db5f30/zope_interface-8.0.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:fcf9097ff3003b7662299f1c25145e15260ec2a27f9a9e69461a585d79ca8552" },
     { url = "https://mirrors.aliyun.com/pypi/packages/56/86/4387a9f951ee18b0e41fda77da77d59c33e59f04660578e2bad688703e64/zope_interface-8.0.1-cp313-cp313-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:6d965347dd1fb9e9a53aa852d4ded46b41ca670d517fd54e733a6b6a4d0561c2" },
     { url = "https://mirrors.aliyun.com/pypi/packages/61/08/ce60a114466abc067c68ed41e2550c655f551468ae17b4b17ea360090146/zope_interface-8.0.1-cp313-cp313-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:9a3b8bb77a4b89427a87d1e9eb969ab05e38e6b4a338a9de10f6df23c33ec3c2" },
     { url = "https://mirrors.aliyun.com/pypi/packages/36/9a/62a9ba3a919594605a07c34eee3068659bbd648e2fa0c4a86d876810b674/zope_interface-8.0.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:87e6b089002c43231fb9afec89268391bcc7a3b66e76e269ffde19a8112fb8d5" },
-    { url = "https://mirrors.aliyun.com/pypi/packages/da/06/8fe88bd7edef60566d21ef5caca1034e10f6b87441ea85de4bbf9ea74768/zope_interface-8.0.1-cp313-cp313-win_amd64.whl", hash = "sha256:64a43f5280aa770cbafd0307cb3d1ff430e2a1001774e8ceb40787abe4bb6658" },
 ]
 
 [[package]]

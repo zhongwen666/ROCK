@@ -37,6 +37,7 @@ class PowerShellError(RockletException, RuntimeError):
 
 class PowerShellNotFoundError(RockletException, FileNotFoundError):
     """Raised when PowerShell executable is not found on the system."""
+
     pass
 
 
@@ -67,3 +68,7 @@ class DeploymentStartupError(RockletException, RuntimeError):
 
 class DockerPullError(DeploymentStartupError):
     ...
+
+
+class UnsupportedPlatformError(RockletException, NotImplementedError):
+    """Raised when the current OS has no PlatformAdapter implementation."""
