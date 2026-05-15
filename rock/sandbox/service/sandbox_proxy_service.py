@@ -78,6 +78,29 @@ class SandboxProxyService:
         )
 
         self._batch_get_status_max_count = rock_config.proxy_service.batch_get_status_max_count
+        self._validate_oss_config_or_warn()
+
+    def _validate_oss_config_or_warn(self) -> None:
+        # Same resolution order as gen_oss_sts_token: env > YAML
+        endpoint = env_vars.ROCK_OSS_BUCKET_ENDPOINT or self.oss_config.endpoint
+        bucket = env_vars.ROCK_OSS_BUCKET_NAME or self.oss_config.bucket
+        region = env_vars.ROCK_OSS_BUCKET_REGION
+        fields = {
+            "endpoint": endpoint,
+            "bucket": bucket,
+            "region": region,
+            "access_key_id": self.oss_config.access_key_id,
+            "access_key_secret": self.oss_config.access_key_secret,
+            "role_arn": self.oss_config.role_arn,
+        }
+        set_count = sum(1 for v in fields.values() if v)
+        if 0 < set_count < len(fields):
+            missing = [k for k, v in fields.items() if not v]
+            logger.warning(
+                "OSS configuration is partially set. Missing fields: %s. "
+                "Server will return null for these in /get_token, clients fall back accordingly.",
+                ", ".join(missing),
+            )
 
     @monitor_sandbox_operation()
     async def create_session(self, request: CreateSessionRequest) -> CreateBashSessionResponse:
@@ -658,10 +681,18 @@ class SandboxProxyService:
         try:
             body = self.sts_client.do_action_with_exception(request)
             token = json.loads(oss2.to_unicode(body))
-            return token["Credentials"]
+            credentials = token["Credentials"]
         except Exception:
             logger.error("generate oss sts token failed")
             return None
+
+        return {
+            **credentials,
+            # env > YAML, matches client-side Layer 1 priority
+            "Endpoint": env_vars.ROCK_OSS_BUCKET_ENDPOINT or self.oss_config.endpoint or None,
+            "Bucket": env_vars.ROCK_OSS_BUCKET_NAME or self.oss_config.bucket or None,
+            "Region": env_vars.ROCK_OSS_BUCKET_REGION or None,
+        }
 
     async def get_sandbox_websocket_url(
         self, sandbox_id: str, target_path: str | None = None, port: int | None = None
