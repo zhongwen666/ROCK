@@ -110,6 +110,21 @@ class BaseActor:
         self._gauges["rt"] = self.meter.create_gauge(
             name="xrl_gateway.system.lifespan_rt", description="Life Span Rt", unit="1"
         )
+        self._gauges["cpus_allocated"] = self.meter.create_gauge(
+            name="xrl_gateway.system.cpus_allocated",
+            description="Sandbox allocated CPU cores (config.cpus)",
+            unit="1",
+        )
+        self._gauges["cpus_limit"] = self.meter.create_gauge(
+            name="xrl_gateway.system.cpus_limit",
+            description="Sandbox CPU hard limit; equals cpus_allocated when no overcommit",
+            unit="1",
+        )
+        self._gauges["cpus_used"] = self.meter.create_gauge(
+            name="xrl_gateway.system.cpus_used",
+            description="Sandbox actual CPU cores used (cpu_percent/100 * cpus_limit)",
+            unit="1",
+        )
 
     async def _setup_monitor(self):
         if not env_vars.ROCK_MONITOR_ENABLE:
@@ -178,6 +193,21 @@ class BaseActor:
                 self._gauges["mem"].set(metrics["mem"], attributes=attributes)
                 self._gauges["disk"].set(metrics["disk"], attributes=attributes)
                 self._gauges["net"].set(metrics["net"], attributes=attributes)
+
+                cpus = float(self._config.cpus)
+                limit_cpus_raw = self._config.limit_cpus
+                # When limit_cpus is None, treat it as equal to cpus (no overcommit).
+                effective_limit = float(limit_cpus_raw) if limit_cpus_raw is not None else cpus
+
+                self._gauges["cpus_allocated"].set(cpus, attributes=attributes)
+                self._gauges["cpus_limit"].set(effective_limit, attributes=attributes)
+
+                # cpus_used inherits the semantic of metrics["cpu"]: it is reported
+                # as a percentage of the sandbox's allocated CPU (see the legend of
+                # xrl_gateway.system.cpu in admin/metrics/monitor.py). Multiplying by
+                # effective_limit converts it back to absolute cores.
+                cpus_used = (metrics["cpu"] / 100.0) * effective_limit if effective_limit > 0 else 0.0
+                self._gauges["cpus_used"].set(cpus_used, attributes=attributes)
 
                 logger.debug(f"Successfully reported metrics for sandbox: {sandbox_id}")
             else:

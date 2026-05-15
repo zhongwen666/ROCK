@@ -3,7 +3,7 @@ from enum import Enum
 GET_STATUS_SWITCH = "get_status_v2_enabled"
 KATA_RUNTIME_SWITCH = "use_kata_enabled"
 SUPPORT_KATA_SWITCH = "support_kata_enabled"
-CPU_PREEMPT_SWITCH = "cpu_preempt_enabled"
+CPU_OVERCOMMIT_HEADROOM_KEY = "cpu_overcommit_headroom"
 KATA_DIND_DISK_SIZE_KEY = "kata_dind_disk_size"
 SANDBOX_DISK_LIMIT_ROOTFS_KEY = "sandbox_disk_limit_rootfs"
 SANDBOX_DISK_LIMIT_LOG_KEY = "sandbox_disk_limit_log"

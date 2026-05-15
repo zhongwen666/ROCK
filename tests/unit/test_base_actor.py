@@ -150,6 +150,8 @@ def _make_actor() -> ConcreteBaseActor:
     config = MagicMock()
     config.container_name = "test-container"
     config.auto_clear_time = None  # skip DockerDeploymentConfig branch
+    config.cpus = 2.0
+    config.limit_cpus = None
 
     deployment = MagicMock()
     deployment.__class__ = object  # make isinstance(deployment, DockerDeployment) return False
@@ -157,7 +159,7 @@ def _make_actor() -> ConcreteBaseActor:
     actor = ConcreteBaseActor(config, deployment)
     actor.host = "127.0.0.1"
     # Pre-populate all gauges with mocks so tests can override selectively
-    for key in ("cpu", "mem", "disk", "net", "rt"):
+    for key in ("cpu", "mem", "disk", "net", "rt", "cpus_allocated", "cpus_limit", "cpus_used"):
         actor._gauges[key] = MagicMock()
     return actor
 
