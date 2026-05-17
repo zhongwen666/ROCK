@@ -274,7 +274,7 @@ scheduler:
 | 任务到点触发,但每个 worker 都进入 `failed_details` 且报连接错误 | worker 上 rocklet 未运行,或 `Port.PROXY` 被防火墙阻断 | 在 worker 上访问 rocklet 存活探针 `GET /is_alive`(例如 `curl http://<worker_ip>:<Port.PROXY>/is_alive`);若无响应,使用 `rocklet --port <Port.PROXY>` 重启或在防火墙放行该端口。 |
 | 非幂等任务在某个 worker 上始终不再触发 | 状态文件中记录的 PID 仍存活 | 查看 `<status_dir>/<task>_status.json`,如 `status: running` 且 PID 仍在,则 `should_run` 会返回 `False`,属预期行为。 |
 | 日志报 `Failed to create task '<class>'` | `task_class` 导入失败 | 确认对应模块在 admin 进程中可被导入(同一个 venv、`PYTHONPATH` 中可见)。 |
-| `ImagePullTask` 中 `docker login` 失败 | `registry_password` 未做 base64 编码,或镜像名称解析出的仓库地址有误 | 用 `echo -n '<pwd>' | base64` 重新编码;确认镜像名中的仓库 host 正确。 |
+| `ImagePullTask` 中 `docker login` 失败 | `registry_password` 未做 base64 编码,或镜像名称解析出的仓库地址有误 | 用 `echo -n '<pwd>' \| base64` 重新编码;确认镜像名中的仓库 host 正确。 |
 
 ## 相关文档
 

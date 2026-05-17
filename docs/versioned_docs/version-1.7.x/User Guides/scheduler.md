@@ -274,7 +274,7 @@ This means task interval changes, parameter tweaks, and adding/removing tasks ca
 | Task ticks fire but every worker shows up in `failed_details` with connection errors | `rocklet` is not running on the workers, or `Port.PROXY` is blocked | On the worker host, hit the rocklet liveness endpoint `GET /is_alive` on `Port.PROXY` (e.g. `curl http://<worker_ip>:<Port.PROXY>/is_alive`); if it does not respond, restart rocklet (`rocklet --port <Port.PROXY>`) or open the port in the firewall. |
 | Task runs but never repeats on a non-idempotent worker | Recorded PID still alive | Inspect `<status_dir>/<task>_status.json`; if `status: running` and the PID is alive, `should_run` returns `False`. |
 | `Failed to create task '<class>'` | `task_class` import failed | Ensure the module is importable inside the admin process (installed in the same venv, on `PYTHONPATH`). |
-| `docker login` failing in `ImagePullTask` | `registry_password` not base64-encoded, or wrong registry parsed from image | Re-encode the password with `echo -n '<pwd>' | base64`; double-check the image's registry host. |
+| `docker login` failing in `ImagePullTask` | `registry_password` not base64-encoded, or wrong registry parsed from image | Re-encode the password with `echo -n '<pwd>' \| base64`; double-check the image's registry host. |
 
 ## Related Documents
 
