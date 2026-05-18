@@ -225,6 +225,13 @@ class K8sConfig:
     namespace: str = "rock"
     templates: dict[str, dict] = field(default_factory=dict)
 
+    # Paths (relative to env yaml dir, or absolute) of YAML files holding shared
+    # template definitions. Each file's top-level keys are template names. The
+    # resolver in RockConfig.from_env loads these in order (later wins on key
+    # conflict) then lets the inline `templates` block override. After loading
+    # the field is consumed (cleared) so K8sConfig only carries `templates`.
+    template_includes: list[str] = field(default_factory=list)
+
     # Template mapping: image_os -> template_name, e.g., {"windows": "windows_template", "linux": "default"}
     template_map: dict[str, str] = field(default_factory=dict)
 
@@ -281,6 +288,43 @@ class RuntimeConfig:
             raise Exception("ROCK_ENVHUB_DB_URL is not an absolute path")
 
 
+def _resolve_k8s_template_includes(k8s_dict: dict, base_dir: Path) -> None:
+    """Resolve K8sConfig.template_includes in place.
+
+    Reads each path under `template_includes` (relative paths are anchored at
+    `base_dir`, typically the env yaml's parent directory), parses it as YAML
+    whose top-level keys are template names, and merges the result into
+    `templates`. Resolution rules:
+
+    - Multiple includes: processed in declaration order; later wins per key.
+    - Inline `templates`: takes precedence over any include.
+    - Each template entry is replaced wholesale (no deep merge per template) so
+      env-level overrides are explicit and unambiguous.
+
+    The `template_includes` key is removed from the dict after resolution so
+    that K8sConfig(**dict) sees an already-merged `templates` only.
+    """
+    includes = k8s_dict.pop("template_includes", None) or []
+    if not includes:
+        return
+
+    inline = k8s_dict.get("templates") or {}
+    merged: dict[str, dict] = {}
+    for rel in includes:
+        path = Path(rel)
+        if not path.is_absolute():
+            path = base_dir / path
+        if not path.exists():
+            raise FileNotFoundError(f"k8s.template_includes references missing file: {path}")
+        with open(path) as f:
+            loaded = yaml.safe_load(f) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"k8s template include {path} must be a mapping at top level")
+        merged.update(loaded)
+    merged.update(inline)
+    k8s_dict["templates"] = merged
+
+
 @dataclass
 class RockConfig:
     ray: RayConfig = field(default_factory=RayConfig)
@@ -318,6 +362,7 @@ class RockConfig:
         if "ray" in config:
             kwargs["ray"] = RayConfig(**config["ray"])
         if "k8s" in config:
+            _resolve_k8s_template_includes(config["k8s"], config_file.parent)
             kwargs["k8s"] = K8sConfig(**config["k8s"])
         if "warmup" in config:
             kwargs["warmup"] = WarmupConfig(**config["warmup"])

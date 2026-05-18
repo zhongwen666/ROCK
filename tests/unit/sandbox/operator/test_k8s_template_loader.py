@@ -93,8 +93,13 @@ class TestK8sTemplateLoader:
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
 
-        # Should not have resources section if not specified
-        assert "resources" not in container or not container.get("resources")
+        # Should not have any concrete resource values when nothing is specified.
+        # The Jinja2-based render keeps the template's resources skeleton but
+        # drops any keys whose placeholder rendered to empty (cpus, memory).
+        assert "resources" in container
+        resources = container["resources"]
+        assert resources.get("requests", {}) == {}
+        assert resources.get("limits", {}) == {}
 
     def test_build_manifest_with_custom_image(self, template_loader):
         """Test building manifest with custom image."""
@@ -150,3 +155,76 @@ class TestK8sTemplateLoader:
 
         pod_labels = manifest["spec"]["template"]["metadata"]["labels"]
         assert pod_labels[K8sConstants.LABEL_SANDBOX_ID] == "test-sandbox"
+
+    def test_build_manifest_gpu_template(self):
+        """GPU placeholders fill correctly when num_gpus and accelerator_type provided."""
+        templates = {
+            "gpu": {
+                "ports": {"proxy": 8000, "server": 8080, "ssh": 22},
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "main",
+                                "image": "{{ image | default('cuda:12', true) }}",
+                                "resources": {
+                                    "limits": {
+                                        "nvidia.com/gpu": ("{{ num_gpus if num_gpus else '' }}"),
+                                    }
+                                },
+                            }
+                        ],
+                        "nodeSelector": {
+                            "nvidia.com/gpu.product": "{{ accelerator_type }}",
+                        },
+                    }
+                },
+            }
+        }
+        loader = K8sTemplateLoader(templates=templates, default_namespace="rock-test")
+
+        manifest = loader.build_manifest(
+            template_name="gpu",
+            sandbox_id="test-gpu",
+            num_gpus=4,
+            accelerator_type="A100",
+        )
+
+        container = manifest["spec"]["template"]["spec"]["containers"][0]
+        assert container["resources"]["limits"]["nvidia.com/gpu"] == "4"
+
+        nodeSelector = manifest["spec"]["template"]["spec"]["nodeSelector"]
+        assert nodeSelector["nvidia.com/gpu.product"] == "A100"
+
+    def test_build_manifest_drops_gpu_when_no_gpu(self):
+        """When num_gpus omitted, GPU keys collapse out of resources.limits."""
+        templates = {
+            "gpu": {
+                "ports": {"proxy": 8000, "server": 8080, "ssh": 22},
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "main",
+                                "image": "{{ image | default('cuda:12', true) }}",
+                                "resources": {
+                                    "limits": {
+                                        "cpu": "{{ cpus | default('2', true) }}",
+                                        "nvidia.com/gpu": ("{{ num_gpus if num_gpus else '' }}"),
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                },
+            }
+        }
+        loader = K8sTemplateLoader(templates=templates, default_namespace="rock-test")
+
+        manifest = loader.build_manifest(template_name="gpu", sandbox_id="test-cpu")
+
+        limits = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]
+        # cpu has a default → present
+        assert limits["cpu"] == "2"
+        # GPU placeholders rendered to empty → keys dropped
+        assert "nvidia.com/gpu" not in limits
