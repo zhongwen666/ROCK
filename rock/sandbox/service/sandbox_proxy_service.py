@@ -682,14 +682,22 @@ class SandboxProxyService:
         port = service_status.get_mapped_port(Port.PROXY)
         return f"http://{host_ip}:{port}"
 
-    def gen_oss_sts_token(self, account: str = "legacy") -> dict | None:  # CHANGED: account param, default "legacy" preserves BC
+    def gen_oss_sts_token(
+        self, account: str = "legacy"
+    ) -> dict | None:  # CHANGED: account param, default "legacy" preserves BC
         """Generate STS credentials and OSS config for the given account.
+
+        Returns ONLY OSS connectivity / account-scoped config. Sandbox-side
+        domain policy (e.g. archive prefix, retry counts) does NOT belong here
+        and must be fetched from a separate endpoint when a client needs it.
+
         Args:
             account: "legacy" (xrl-sandbox, BC for SDK < 1.8) or
                      "primary" (chatos-rock, SDK >= 1.8).
         Returns:
             Dict with STS credentials (AccessKeyId, AccessKeySecret, SecurityToken, Expiration) PLUS account-scoped OSS config:
-            Endpoint, Bucket, Region, Prefix. None on failure or when the requested account is unconfigured.
+            Endpoint, Bucket, Region, Prefix (transfer/upload prefix).
+            None on failure or when the requested account is unconfigured.
         """
         if account not in self._sts_clients:
             logger.error(f"unknown OSS account: {account!r}")
@@ -702,7 +710,7 @@ class SandboxProxyService:
             endpoint = primary.endpoint or None
             bucket = primary.bucket or None
             region = primary.region or env_vars.ROCK_OSS_BUCKET_REGION or None
-            prefix = self.oss_config.transfer_prefix or None
+            prefix = self._rock_config.sandbox_config.file_transfer.prefix or None
         else:  # legacy
             role_arn = self.oss_config.role_arn
             session_name = "rock-sandbox-legacy"
