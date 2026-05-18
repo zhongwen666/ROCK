@@ -321,8 +321,14 @@ async def portforward(websocket: WebSocket, id: str, port: int):
 
 @sandbox_proxy_router.get("/get_token")
 @handle_exceptions(error_message="get oss sts token failed")
-async def get_token():
-    result = await asyncio.to_thread(sandbox_proxy_service.gen_oss_sts_token)
+async def get_token(account: str = "legacy"):
+    """STS token for OSS upload/download.
+
+    Query param `account` selects the credential pool:
+      - "legacy"  (default): xrl-sandbox bucket, BC for SDK < 1.8
+      - "primary":            chatos-rock bucket, used by SDK >= 1.8
+    """
+    result = await asyncio.to_thread(sandbox_proxy_service.gen_oss_sts_token, account)
     return RockResponse(result=result)
 
 

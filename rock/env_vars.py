@@ -37,6 +37,10 @@ if TYPE_CHECKING:
     ROCK_OSS_BUCKET_ENDPOINT: str | None = None
     ROCK_OSS_BUCKET_NAME: str | None = None
     ROCK_OSS_BUCKET_REGION: str | None = None
+    ROCK_OSS_TRANSFER_PREFIX: str | None = None
+    """Optional key prefix for host↔container transfer objects under the
+    bucket identified by ROCK_OSS_BUCKET_NAME. Empty = flat layout (legacy
+    bucket). New SDK clusters set this to "rock-transfer/"."""
 
     ROCK_PIP_INDEX_URL: str | None = "https://mirrors.aliyun.com/pypi/simple/"
     ROCK_MONITOR_ENABLE: bool = False
@@ -45,6 +49,7 @@ if TYPE_CHECKING:
     ROCK_PYTHON_ENV_PATH: str | None = None
     ROCK_ADMIN_ENV: str | None = "dev"
     ROCK_ADMIN_ROLE: str | None = "write"
+    ROCK_FORCE_PRIMARY_POD: bool = False
     ROCK_CLI_LOAD_PATHS: str = str(Path(__file__).parent / "cli" / "command")
     ROCK_CLI_DEFAULT_CONFIG_PATH: str
 
@@ -91,6 +96,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "ROCK_RAY_NAMESPACE": lambda: os.getenv("ROCK_RAY_NAMESPACE", "xrl-sandbox"),
     "ROCK_SANDBOX_EXPIRE_TIME_KEY": lambda: os.getenv("ROCK_SANDBOX_EXPIRE_TIME_KEY", "expire_time"),
     "ROCK_SANDBOX_AUTO_CLEAR_TIME_KEY": lambda: os.getenv("ROCK_SANDBOX_AUTO_CLEAR_TIME_KEY", "auto_clear_time"),
+    "ROCK_OSS_TRANSFER_PREFIX": lambda: os.getenv("ROCK_OSS_TRANSFER_PREFIX"),
     "ROCK_OSS_ENABLE": lambda: os.getenv("ROCK_OSS_ENABLE", "false").lower() == "true",
     "ROCK_OSS_BUCKET_ENDPOINT": lambda: os.getenv("ROCK_OSS_BUCKET_ENDPOINT"),
     "ROCK_OSS_BUCKET_NAME": lambda: os.getenv("ROCK_OSS_BUCKET_NAME"),
@@ -102,6 +108,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "ROCK_PYTHON_ENV_PATH": lambda: os.getenv("ROCK_PYTHON_ENV_PATH", sys.base_prefix),
     "ROCK_ADMIN_ENV": lambda: os.getenv("ROCK_ADMIN_ENV", "dev"),
     "ROCK_ADMIN_ROLE": lambda: os.getenv("ROCK_ADMIN_ROLE", "write"),
+    "ROCK_FORCE_PRIMARY_POD": lambda: os.getenv("ROCK_FORCE_PRIMARY_POD", "false").lower() == "true",
     "ROCK_CLI_LOAD_PATHS": lambda: os.getenv("ROCK_CLI_LOAD_PATHS", str(Path(__file__).parent / "cli" / "command")),
     "ROCK_CLI_DEFAULT_CONFIG_PATH": lambda: os.getenv(
         "ROCK_CLI_DEFAULT_CONFIG_PATH", Path.home() / ".rock" / "config.ini"
