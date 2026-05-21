@@ -36,6 +36,7 @@ def make_config(
     memory: str = "4Gi",
     extended_params: dict = None,
     image_os: str = "linux",
+    num_gpus: float | None = None,
 ) -> DockerDeploymentConfig:
     return DockerDeploymentConfig(
         image=image,
@@ -44,6 +45,7 @@ def make_config(
         container_name="test-sandbox",
         extended_params=extended_params or {},
         image_os=image_os,
+        num_gpus=num_gpus,
     )
 
 
@@ -209,6 +211,30 @@ class TestGetTemplateName:
         provider = make_provider()
         config = make_config()
         assert provider._get_template_name(config) == "default"
+
+    def test_returns_gpu_single_when_num_gpus_is_one(self):
+        """num_gpus == 1 (single full card) routes to 'gpu-single'."""
+        provider = make_provider()
+        config = make_config(num_gpus=1)
+        assert provider._get_template_name(config) == K8sConstants.TEMPLATE_GPU_SINGLE
+
+    def test_returns_gpu_multi_when_fractional_lt_one(self):
+        """Fractional GPU (0 < num_gpus < 1) routes to 'gpu-multi'."""
+        provider = make_provider()
+        config = make_config(num_gpus=0.5)
+        assert provider._get_template_name(config) == K8sConstants.TEMPLATE_GPU_MULTI
+
+    def test_returns_gpu_multi_when_num_gpus_gt_one(self):
+        """Multi-GPU (num_gpus > 1) routes to 'gpu-multi'."""
+        provider = make_provider()
+        config = make_config(num_gpus=2)
+        assert provider._get_template_name(config) == K8sConstants.TEMPLATE_GPU_MULTI
+
+    def test_extended_params_takes_priority_over_gpu_routing(self):
+        """extended_params template_name beats the GPU auto-selection."""
+        provider = make_provider()
+        config = make_config(extended_params={"template_name": "custom"}, num_gpus=4)
+        assert provider._get_template_name(config) == "custom"
 
 
 # ========== _get_pool_ports ==========

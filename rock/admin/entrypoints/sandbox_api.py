@@ -29,6 +29,7 @@ from rock.admin.proto.response import SandboxStartResponse
 from rock.common.constants import (
     CPU_OVERCOMMIT_ALLOWED_KEYS_KEY,
     CPU_OVERCOMMIT_HEADROOM_KEY,
+    EXTRA_ACCELERATOR_TYPES_KEY,
     GET_STATUS_SWITCH,
     KATA_DIND_DISK_SIZE_KEY,
     KATA_RUNTIME_SWITCH,
@@ -37,8 +38,9 @@ from rock.common.constants import (
     SUPPORT_KATA_SWITCH,
 )
 from rock.common.exception import handle_exceptions
-from rock.deployments.config import DockerDeploymentConfig
+from rock.deployments.config import AcceleratorType, DockerDeploymentConfig
 from rock.sandbox.sandbox_manager import SandboxManager
+from rock.sdk.common.exceptions import BadRequestRockError
 
 sandbox_router = APIRouter()
 sandbox_manager: SandboxManager
@@ -96,6 +98,33 @@ async def _apply_disk_limits(config: DockerDeploymentConfig) -> None:
     config.disk_limit_log = disk_limit_log
 
 
+async def _apply_accelerator_type_validation(config: DockerDeploymentConfig) -> None:
+    """Validate ``config.accelerator_type`` against the built-in enum union with
+    Nacos-provided extras.
+
+    Allowed set = ``AcceleratorType`` enum values ∪ list under Nacos key
+    ``extra_accelerator_types``. When Nacos is unavailable or the key is missing,
+    only the built-in enum applies. Raises :class:`BadRequestRockError` on
+    mismatch. ``None`` is always allowed (caller did not request a specific GPU).
+    """
+    if config.accelerator_type is None:
+        return
+
+    allowed: set[str] = {item.value for item in AcceleratorType}
+
+    nacos = sandbox_manager.rock_config.nacos_provider
+    if nacos is not None:
+        nacos_config = await nacos.get_config() or {}
+        extras = nacos_config.get(EXTRA_ACCELERATOR_TYPES_KEY) or []
+        if isinstance(extras, list):
+            allowed.update(str(item) for item in extras)
+
+    if config.accelerator_type not in allowed:
+        raise BadRequestRockError(
+            f"Invalid accelerator_type {config.accelerator_type!r}. " f"Allowed values: {sorted(allowed)}"
+        )
+
+
 async def _apply_cpu_overcommit_default(config: DockerDeploymentConfig, rock_authorization: str | None) -> None:
     """Derive limit_cpus from cpus + Nacos headroom when SDK did not set it.
 
@@ -137,6 +166,7 @@ async def _apply_cpu_overcommit_default(config: DockerDeploymentConfig, rock_aut
 @handle_exceptions(error_message="start sandbox failed")
 async def start(request: SandboxStartRequest) -> RockResponse[SandboxStartResponse]:
     config = DockerDeploymentConfig.from_request(request)
+    await _apply_accelerator_type_validation(config)
     await _apply_kata_runtime_switch(config)
     await _apply_kata_disk_size(config)
     await _apply_disk_limits(config)
@@ -151,6 +181,7 @@ async def start_async(
     headers: Annotated[StartHeaders, Depends()],
 ) -> RockResponse[SandboxStartResponse]:
     config = DockerDeploymentConfig.from_request(request)
+    await _apply_accelerator_type_validation(config)
     await _apply_kata_runtime_switch(config)
     await _apply_kata_disk_size(config)
     await _apply_cpu_overcommit_default(config, headers.user_info.get("rock_authorization"))
@@ -183,14 +214,16 @@ async def get_sandbox_statistics(sandbox_id: str):
 
 @sandbox_router.get("/get_status")
 @handle_exceptions(error_message="get sandbox status failed")
-async def get_status(sandbox_id: str):
+async def get_status(sandbox_id: str, include_all_states: bool = False):
     # TODO: do judgement inside operator
     if (
         sandbox_manager.rock_config.nacos_provider is not None
         and await sandbox_manager.rock_config.nacos_provider.get_switch_status(GET_STATUS_SWITCH)
     ):
-        return RockResponse(result=await sandbox_manager.get_status_v2(sandbox_id))
-    return RockResponse(result=await sandbox_manager.get_status(sandbox_id))
+        return RockResponse(
+            result=await sandbox_manager.get_status_v2(sandbox_id, include_all_states=include_all_states)
+        )
+    return RockResponse(result=await sandbox_manager.get_status(sandbox_id, include_all_states=include_all_states))
 
 
 @sandbox_router.post("/execute")

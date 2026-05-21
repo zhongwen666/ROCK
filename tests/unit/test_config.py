@@ -1,6 +1,10 @@
-import pytest
+import tempfile
+from pathlib import Path
 
-from rock.config import RockConfig, RuntimeConfig
+import pytest
+import yaml
+
+from rock.config import RockConfig, RuntimeConfig, _resolve_k8s_template_includes
 
 
 @pytest.mark.asyncio
@@ -145,3 +149,91 @@ def test_sandbox_config_coerces_nested_dicts_from_yaml():
     assert cfg.log.keep_days_before_archive == 7
     assert isinstance(cfg.file_transfer, SandboxFileTransferConfig)
     assert cfg.file_transfer.prefix == "rock-transfer/"
+
+
+# ===== _resolve_k8s_template_includes =====
+
+
+def _write_yaml(path: Path, data: dict) -> None:
+    path.write_text(yaml.safe_dump(data))
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_noop_without_includes():
+    """No template_includes key → templates passed through unchanged."""
+    k8s = {"templates": {"default": {"a": 1}}}
+    _resolve_k8s_template_includes(k8s, Path("/unused"))
+    assert k8s == {"templates": {"default": {"a": 1}}}
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_single_file_relative():
+    """Single relative-path include populates templates."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        inc_dir = base / "templates" / "k8s"
+        inc_dir.mkdir(parents=True)
+        _write_yaml(inc_dir / "default.yml", {"default": {"ports": {"proxy": 8000}}})
+        k8s = {"template_includes": ["templates/k8s/default.yml"]}
+        _resolve_k8s_template_includes(k8s, base)
+        assert "template_includes" not in k8s
+        assert k8s["templates"] == {"default": {"ports": {"proxy": 8000}}}
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_multiple_later_wins():
+    """Conflicts across includes resolved by declaration order — later wins."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        _write_yaml(base / "a.yml", {"shared": {"v": 1}, "only_a": {"x": "a"}})
+        _write_yaml(base / "b.yml", {"shared": {"v": 2}, "only_b": {"x": "b"}})
+        k8s = {"template_includes": ["a.yml", "b.yml"]}
+        _resolve_k8s_template_includes(k8s, base)
+        assert k8s["templates"]["shared"] == {"v": 2}
+        assert k8s["templates"]["only_a"] == {"x": "a"}
+        assert k8s["templates"]["only_b"] == {"x": "b"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_inline_overrides_include():
+    """Inline templates entry replaces the include version wholesale."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        _write_yaml(base / "base.yml", {"default": {"from": "include"}})
+        k8s = {
+            "template_includes": ["base.yml"],
+            "templates": {"default": {"from": "inline"}},
+        }
+        _resolve_k8s_template_includes(k8s, base)
+        assert k8s["templates"] == {"default": {"from": "inline"}}
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_absolute_path():
+    """Absolute paths bypass base_dir resolution."""
+    with tempfile.TemporaryDirectory() as tmp:
+        abs_file = Path(tmp) / "abs.yml"
+        _write_yaml(abs_file, {"default": {"k": "v"}})
+        k8s = {"template_includes": [str(abs_file)]}
+        _resolve_k8s_template_includes(k8s, Path("/nonexistent"))
+        assert k8s["templates"] == {"default": {"k": "v"}}
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_missing_file_raises():
+    """Missing include path surfaces a clear FileNotFoundError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        k8s = {"template_includes": ["does-not-exist.yml"]}
+        with pytest.raises(FileNotFoundError, match="does-not-exist.yml"):
+            _resolve_k8s_template_includes(k8s, Path(tmp))
+
+
+@pytest.mark.asyncio
+async def test_resolve_includes_non_mapping_raises():
+    """A list-shaped include yaml is rejected."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        (base / "bad.yml").write_text("- not_a_mapping\n")
+        k8s = {"template_includes": ["bad.yml"]}
+        with pytest.raises(ValueError, match="must be a mapping"):
+            _resolve_k8s_template_includes(k8s, base)

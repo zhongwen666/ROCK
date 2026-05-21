@@ -26,6 +26,7 @@ dependencies = [
     "rich",
     "oss2",
     "pyyaml",
+    "jinja2",
     "tzdata",
 ]
 
