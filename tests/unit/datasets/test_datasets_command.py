@@ -21,12 +21,14 @@ def make_base_args(**kwargs):
         org=None,
         dataset=None,
         split=None,
+        depth=2,
         offset=0,
         limit=None,
     )
     for k, v in kwargs.items():
         setattr(args, k, v)
     return args
+
 
 def make_registry_info():
     return OssRegistryInfo(oss_bucket="b", oss_access_key_id="k", oss_access_key_secret="s")
@@ -45,7 +47,9 @@ def test_command_name():
 
 def test_build_oss_registry_info_from_cli_args():
     cmd = DatasetsCommand()
-    args = make_base_args(bucket="cli-bucket", endpoint="https://oss.example.com", access_key_id="kid", access_key_secret="ksec")
+    args = make_base_args(
+        bucket="cli-bucket", endpoint="https://oss.example.com", access_key_id="kid", access_key_secret="ksec"
+    )
 
     with patch("rock.cli.command.datasets.ConfigManager") as mock_mgr:
         ds_cfg = mock_mgr.return_value.get_config.return_value.dataset_config
@@ -204,3 +208,172 @@ def test_tasks_prints_no_tasks_message_when_not_found(capsys):
 
     out = capsys.readouterr().out
     assert "No tasks found" in out
+
+
+# ---------------------------------------------------------------------------
+# list subcommand tests (depth + --org rewrite)
+# ---------------------------------------------------------------------------
+
+
+def test_list_default_depth_calls_list_all_datasets_and_renders_two_columns(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="list", depth=None, org=None)
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_all_datasets.return_value = [
+                ("alibaba", "pinch"),
+                ("qwen", "bench-1"),
+            ]
+            asyncio.run(cmd._list(args))
+
+    MockClient.return_value.list_all_datasets.assert_called_once_with()
+    out = capsys.readouterr().out
+    assert "Organization" in out
+    assert "Dataset" in out
+    assert "alibaba" in out and "pinch" in out
+    assert "qwen" in out and "bench-1" in out
+    assert "2 datasets in 2 organizations." in out
+
+
+def test_list_depth_1_calls_list_organizations_and_renders_one_column(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="list", depth=1, org=None)
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_organizations.return_value = ["alibaba", "qwen"]
+            asyncio.run(cmd._list(args))
+
+    MockClient.return_value.list_organizations.assert_called_once_with()
+    MockClient.return_value.list_all_datasets.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Organization" in out
+    assert "alibaba" in out
+    assert "qwen" in out
+    assert "2 organizations." in out
+
+
+def test_list_with_org_calls_list_org_datasets(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="list", depth=2, org="alibaba")
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_org_datasets.return_value = ["pinch", "webdev"]
+            asyncio.run(cmd._list(args))
+
+    MockClient.return_value.list_org_datasets.assert_called_once_with("alibaba")
+    MockClient.return_value.list_all_datasets.assert_not_called()
+    MockClient.return_value.list_organizations.assert_not_called()
+    out = capsys.readouterr().out
+    assert "alibaba" in out and "pinch" in out and "webdev" in out
+    assert "2 datasets in 1 organizations." in out
+
+
+def test_list_empty_prints_no_datasets_message(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="list", depth=2, org=None)
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_all_datasets.return_value = []
+            asyncio.run(cmd._list(args))
+
+    out = capsys.readouterr().out
+    assert "No datasets found." in out
+
+
+def test_list_depth_1_empty_prints_no_organizations_message(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="list", depth=1, org=None)
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_organizations.return_value = []
+            asyncio.run(cmd._list(args))
+
+    out = capsys.readouterr().out
+    assert "No organizations found." in out
+
+
+def test_list_parser_depth_and_org_mutually_exclusive():
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["datasets", "list", "--depth", "2", "--org", "alibaba"])
+
+
+def test_list_parser_depth_default_is_deferred_to_runtime():
+    parser = _build_parser()
+    parsed = parser.parse_args(["datasets", "list"])
+    assert parsed.depth is None
+    assert parsed.org is None
+
+
+def test_list_parser_rejects_invalid_depth():
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["datasets", "list", "--depth", "3"])
+
+
+# ---------------------------------------------------------------------------
+# splits subcommand tests
+# ---------------------------------------------------------------------------
+
+
+def test_splits_lists_split_names(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="splits", org="alibaba", dataset="pinch")
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_dataset_splits.return_value = ["test", "train"]
+            asyncio.run(cmd._splits(args))
+
+    MockClient.return_value.list_dataset_splits.assert_called_once_with("alibaba", "pinch")
+    out = capsys.readouterr().out
+    assert "Split" in out
+    assert "test" in out
+    assert "train" in out
+    assert "2 splits." in out
+
+
+def test_splits_empty_prints_no_splits_message(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="splits", org="alibaba", dataset="missing")
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_dataset_splits.return_value = []
+            asyncio.run(cmd._splits(args))
+
+    out = capsys.readouterr().out
+    assert "No splits found for dataset 'alibaba/missing'." in out
+
+
+def test_splits_singular_footer_for_one_split(capsys):
+    cmd = DatasetsCommand()
+    args = make_base_args(datasets_command="splits", org="alibaba", dataset="pinch")
+
+    with patch.object(DatasetsCommand, "_build_oss_registry_info", return_value=make_registry_info()):
+        with patch("rock.cli.command.datasets.DatasetClient") as MockClient:
+            MockClient.return_value.list_dataset_splits.return_value = ["test"]
+            asyncio.run(cmd._splits(args))
+
+    out = capsys.readouterr().out
+    assert "1 split." in out
+
+
+def test_splits_parser_requires_org_and_dataset():
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["datasets", "splits"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["datasets", "splits", "--org", "alibaba"])
+
+
+def test_splits_parser_accepts_org_and_dataset():
+    parser = _build_parser()
+    parsed = parser.parse_args(["datasets", "splits", "--org", "alibaba", "--dataset", "pinch"])
+    assert parsed.org == "alibaba"
+    assert parsed.dataset == "pinch"

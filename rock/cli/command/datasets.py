@@ -35,6 +35,8 @@ class DatasetsCommand(Command):
             await self._list(args)
         elif args.datasets_command == "tasks":
             await self._tasks(args)
+        elif args.datasets_command == "splits":
+            await self._splits(args)
         elif args.datasets_command == "upload":
             await self._upload(args)
         else:
@@ -59,20 +61,48 @@ class DatasetsCommand(Command):
     async def _list(self, args: argparse.Namespace) -> None:
         registry_info = self._build_oss_registry_info(args)
         client = DatasetClient(registry_info)
-        datasets = client.list_datasets(org=getattr(args, "org", None))
 
-        if not datasets:
-            print("No datasets found.")
+        if getattr(args, "org", None):
+            datasets = client.list_org_datasets(args.org)
+            pairs = [(args.org, d) for d in datasets]
+            self._render_org_dataset_pairs(pairs)
             return
 
-        col_id = max(len("Dataset"), max(len(d.id) for d in datasets))
-        col_split = max(len("Split"), max(len(d.split) for d in datasets))
+        depth = getattr(args, "depth", None) or 2
+        if depth == 1:
+            orgs = client.list_organizations()
+            self._render_orgs(orgs)
+            return
 
-        header = f"{'Dataset':<{col_id}}  {'Split':<{col_split}}  {'Tasks':>6}"
+        pairs = client.list_all_datasets()
+        self._render_org_dataset_pairs(pairs)
+
+    @staticmethod
+    def _render_org_dataset_pairs(pairs: list[tuple[str, str]]) -> None:
+        if not pairs:
+            print("No datasets found.")
+            return
+        col_org = max(len("Organization"), max(len(o) for o, _ in pairs))
+        col_ds = max(len("Dataset"), max(len(d) for _, d in pairs))
+        header = f"{'Organization':<{col_org}}  {'Dataset':<{col_ds}}"
         print(header)
         print("-" * len(header))
-        for ds in sorted(datasets, key=lambda d: (d.id, d.split)):
-            print(f"{ds.id:<{col_id}}  {ds.split:<{col_split}}  {len(ds.task_ids):>6}")
+        for o, d in pairs:
+            print(f"{o:<{col_org}}  {d:<{col_ds}}")
+        n_orgs = len({o for o, _ in pairs})
+        print(f"\n{len(pairs)} datasets in {n_orgs} organizations.")
+
+    @staticmethod
+    def _render_orgs(orgs: list[str]) -> None:
+        if not orgs:
+            print("No organizations found.")
+            return
+        width = max(len("Organization"), max(len(o) for o in orgs))
+        print(f"{'Organization':<{width}}")
+        print("-" * width)
+        for o in orgs:
+            print(o)
+        print(f"\n{len(orgs)} organizations.")
 
     async def _tasks(self, args: argparse.Namespace) -> None:
         registry_info = self._build_oss_registry_info(args)
@@ -92,8 +122,6 @@ class DatasetsCommand(Command):
             print("No tasks found after applying offset/limit.")
             return
 
-        limit_text = str(args.limit) if args.limit is not None else "all"
-
         print()
         print("=" * 80)
         print(f"Dataset: {spec.id}  Split: {spec.split}  Total: {total}  Shown: {len(shown_task_ids)}")
@@ -102,6 +130,23 @@ class DatasetsCommand(Command):
         print("-" * 10)
         for task_id in shown_task_ids:
             print(task_id)
+
+    async def _splits(self, args: argparse.Namespace) -> None:
+        registry_info = self._build_oss_registry_info(args)
+        client = DatasetClient(registry_info)
+        splits = client.list_dataset_splits(args.org, args.dataset)
+
+        if not splits:
+            print(f"No splits found for dataset '{args.org}/{args.dataset}'.")
+            return
+
+        width = max(len("Split"), max(len(s) for s in splits))
+        print(f"{'Split':<{width}}")
+        print("-" * width)
+        for s in splits:
+            print(s)
+        word = "split" if len(splits) == 1 else "splits"
+        print(f"\n{len(splits)} {word}.")
 
     async def _upload(self, args: argparse.Namespace) -> None:
         local_dir = Path(args.dir)
@@ -135,14 +180,24 @@ class DatasetsCommand(Command):
         def add_oss_args(parser: argparse.ArgumentParser) -> None:
             parser.add_argument("--bucket", help="OSS bucket name (overrides config.ini)")
             parser.add_argument("--endpoint", help="OSS endpoint URL (overrides config.ini)")
-            parser.add_argument("--access-key-id", dest="access_key_id",
-                                help="OSS access key ID (overrides config.ini)")
-            parser.add_argument("--access-key-secret", dest="access_key_secret",
-                                help="OSS access key secret (overrides config.ini)")
+            parser.add_argument(
+                "--access-key-id", dest="access_key_id", help="OSS access key ID (overrides config.ini)"
+            )
+            parser.add_argument(
+                "--access-key-secret", dest="access_key_secret", help="OSS access key secret (overrides config.ini)"
+            )
             parser.add_argument("--region", help="OSS region (overrides config.ini)")
 
         list_parser = datasets_subparsers.add_parser("list", help="List datasets in OSS registry")
-        list_parser.add_argument("--org", help="Filter by organization")
+        list_group = list_parser.add_mutually_exclusive_group()
+        list_group.add_argument(
+            "--depth",
+            type=int,
+            choices=[1, 2],
+            default=None,
+            help="1: list orgs only. 2 (default): list orgs and datasets.",
+        )
+        list_group.add_argument("--org", help="List datasets under the given organization only")
         add_oss_args(list_parser)
         tasks_parser = datasets_subparsers.add_parser("tasks", help="List task IDs under one dataset split")
         tasks_parser.add_argument("--org", required=True, help="Organization name")
@@ -152,15 +207,25 @@ class DatasetsCommand(Command):
         tasks_parser.add_argument("--limit", type=_positive_int, default=None, help="Maximum number of tasks to show")
         add_oss_args(tasks_parser)
 
+        splits_parser = datasets_subparsers.add_parser("splits", help="List splits under one dataset")
+        splits_parser.add_argument("--org", required=True, help="Organization name")
+        splits_parser.add_argument("--dataset", required=True, help="Dataset name")
+        add_oss_args(splits_parser)
+
         upload_parser = datasets_subparsers.add_parser("upload", help="Upload local task dirs to OSS")
         upload_parser.add_argument("--org", required=True, help="Organization name")
         upload_parser.add_argument("--dataset", required=True, help="Dataset name")
         upload_parser.add_argument("--split", required=True, help="Split name (e.g. train, test, v1.0)")
-        upload_parser.add_argument("--dir", required=True,
-                                   help="Local directory containing {task_id}/ subdirectories")
-        upload_parser.add_argument("--concurrency", type=int, default=4,
-                                   choices=range(1, 17), metavar="[1-16]",
-                                   help="Upload concurrency (default: 4)")
-        upload_parser.add_argument("--overwrite", action="store_true",
-                                   help="Overwrite existing tasks in OSS (default: skip)")
+        upload_parser.add_argument("--dir", required=True, help="Local directory containing {task_id}/ subdirectories")
+        upload_parser.add_argument(
+            "--concurrency",
+            type=int,
+            default=4,
+            choices=range(1, 17),
+            metavar="[1-16]",
+            help="Upload concurrency (default: 4)",
+        )
+        upload_parser.add_argument(
+            "--overwrite", action="store_true", help="Overwrite existing tasks in OSS (default: skip)"
+        )
         add_oss_args(upload_parser)
