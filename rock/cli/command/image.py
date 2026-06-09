@@ -1,6 +1,8 @@
 import argparse
 import logging
+import sys
 
+from rock.cli.command import image_transfer
 from rock.cli.command.command import Command
 from rock.sdk.builder.image_mirror import ImageMirror
 
@@ -18,6 +20,10 @@ class ImageCommand(Command):
     async def arun(self, args: argparse.Namespace):
         if "mirror" == args.image_command:
             await self.mirror(args)
+        elif "transfer" == args.image_command:
+            rc = await image_transfer.run_transfer(args)
+            if rc != 0:
+                sys.exit(rc)
         else:
             raise Exception(f"Unknown image command: {args.image_command}")
 
@@ -96,3 +102,6 @@ class ImageCommand(Command):
         mirror_parser.add_argument("--target-registry", required=True, help="target registry url")
         mirror_parser.add_argument("--target-username", required=True, help="target hub username")
         mirror_parser.add_argument("--target-password", required=True, help="target hub password")
+
+        # rock image transfer  (并行沙箱批量镜像转储)
+        image_transfer.add_transfer_subparser(image_subparsers)

@@ -73,6 +73,11 @@ if TYPE_CHECKING:
 
     ROCK_MODEL_SERVICE_INSTALL_CMD: str
 
+    # Image Transfer (rock image transfer) - default to empty so OpenSource ships no internal endpoints
+    ROCK_IMAGE_TRANSFER_DEST_REGISTRY: str
+    ROCK_IMAGE_TRANSFER_DEST_NAMESPACE: str
+    ROCK_IMAGE_TRANSFER_SANDBOX_IMAGE: str
+
 
 environment_variables: dict[str, Callable[[], Any]] = {
     "ROCK_LOGGING_PATH": lambda: os.getenv("ROCK_LOGGING_PATH"),
@@ -147,6 +152,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     # Docker temp auth directory
     "ROCK_DOCKER_TEMP_AUTH_DIR": lambda: os.getenv("ROCK_DOCKER_TEMP_AUTH_DIR"),
+    # Image Transfer
+    "ROCK_IMAGE_TRANSFER_DEST_REGISTRY": lambda: os.getenv("ROCK_IMAGE_TRANSFER_DEST_REGISTRY"),
+    "ROCK_IMAGE_TRANSFER_DEST_NAMESPACE": lambda: os.getenv("ROCK_IMAGE_TRANSFER_DEST_NAMESPACE"),
+    "ROCK_IMAGE_TRANSFER_SANDBOX_IMAGE": lambda: os.getenv("ROCK_IMAGE_TRANSFER_SANDBOX_IMAGE"),
 }
 
 
