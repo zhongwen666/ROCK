@@ -1,4 +1,5 @@
 # rock/admin/scheduler/tasks/file_cleanup_task.py
+import os
 from dataclasses import dataclass, field
 
 from rock.admin.proto.request import SandboxCommand as Command
@@ -9,6 +10,19 @@ from rock.sandbox.remote_sandbox import RemoteSandboxRuntime
 from rock.utils.format import parse_size_to_bytes
 
 logger = init_logger(name="file_cleanup", file_name=SCHEDULER_LOG_NAME)
+
+# Path blacklist: entries that must NEVER appear in target_dirs because deleting
+# them takes the whole worker (or worse, the host) down. Both entries are real
+# incident sources:
+#   - "/" : `find / -delete` is a full-OS wipe
+#   - "/tmp/miniforge" : uv-shared Python runtime; if removed, no sandbox can start
+# Other "obviously dangerous" OS dirs (/etc, /var, ...) are intentionally NOT here:
+# they're hypothetical mistakes, not observed ones, and a longer list raises the
+# cost of changing the policy later.
+_PATH_BLACKLIST: tuple[str, ...] = (
+    "/",
+    "/tmp/miniforge",
+)
 
 
 @dataclass
@@ -41,16 +55,38 @@ class TargetDirConfig:
 
         Returns:
             A TargetDirConfig instance
+
+        Raises:
+            ValueError: path is empty, relative, or contains ".." traversal.
         """
         if isinstance(raw, str):
-            return cls(path=raw)
-        if isinstance(raw, dict):
-            return cls(
+            instance = cls(path=raw)
+        elif isinstance(raw, dict):
+            instance = cls(
                 path=raw["path"],
                 exclude_dirs=raw.get("exclude_dirs", []),
                 exclude_files=raw.get("exclude_files", []),
             )
-        raise ValueError(f"Unsupported target_dirs entry type: {type(raw)}")
+        else:
+            raise ValueError(f"Unsupported target_dirs entry type: {type(raw)}")
+
+        cls._validate_path(instance.path)
+        return instance
+
+    @staticmethod
+    def _validate_path(path: str) -> None:
+        """Reject empty / non-absolute / traversal paths.
+
+        ".." is checked against the *raw* path components — os.path.normpath
+        would already collapse "/data/../etc" to "/etc", so a post-normalize
+        check would silently accept the very thing we want to reject.
+        """
+        if not path or not isinstance(path, str):
+            raise ValueError(f"target_dirs path must be a non-empty string, got: {path!r}")
+        if not path.startswith("/"):
+            raise ValueError(f"target_dirs path must be an absolute path, got: {path!r}")
+        if ".." in path.split("/"):
+            raise ValueError(f"target_dirs path must not contain '..', got: {path!r}")
 
 
 class FileCleanupTask(BaseTask):
@@ -73,15 +109,41 @@ class FileCleanupTask(BaseTask):
                 and its own exclude_dirs/exclude_files.
             max_age_mins: Max file age in minutes since last modification, default 7 days (10080 mins)
             max_file_size: Max file size threshold (e.g. "500M", "1G"), files exceeding this will be removed
+
+        Raises:
+            ValueError: a target_dirs entry hits _PATH_BLACKLIST (config-time fail-fast).
         """
         super().__init__(
             type="file_cleanup",
             interval_seconds=interval_seconds,
             idempotency=IdempotencyType.IDEMPOTENT,
         )
-        self.target_dirs = target_dirs or []
+        target_dirs = target_dirs or []
+        for dc in target_dirs:
+            self._assert_not_dangerous(dc.path)
+        self.target_dirs = target_dirs
         self.max_age_mins = max_age_mins
         self.max_file_size = max_file_size
+
+    @staticmethod
+    def _assert_not_dangerous(path: str) -> None:
+        """Reject `path` if it equals a blacklist entry or sits in its subtree.
+
+        "/" is exact-match only: subtree match for "/" would reject every
+        absolute path (since `path.startswith("/")` is true for any abs path),
+        which obviously is not the intent — only `target_dirs: ["/"]` itself
+        should fail.
+        """
+        normalized = path.rstrip("/") or "/"
+        for entry in _PATH_BLACKLIST:
+            in_subtree = entry != "/" and (normalized + "/").startswith(entry + "/")
+            if normalized == entry or in_subtree:
+                raise ValueError(
+                    f"FileCleanupTask refuses dangerous path {path!r} "
+                    f"(matched blacklist entry {entry!r}); "
+                    f"these paths are managed by other components, "
+                    f"not by file_cleanup."
+                )
 
     @classmethod
     def from_config(cls, task_config) -> "FileCleanupTask":
@@ -136,42 +198,71 @@ class FileCleanupTask(BaseTask):
         return f'-name "{value}"'
 
     @staticmethod
+    def _build_not_path_pattern(value: str, target_dir: str, is_dir: bool) -> str:
+        """Build a -not -path pattern for a single exclusion value.
+
+        Args:
+            value: The exclusion value (plain name, relative path, or absolute path)
+            target_dir: The target directory for resolving relative paths
+            is_dir: If True, also exclude descendants (*/pattern/*)
+
+        Returns:
+            A string of -not -path expressions
+        """
+        if value.startswith("/"):
+            pattern = value.rstrip("/")
+        elif "/" in value:
+            normalized = value.lstrip("./").strip("/")
+            pattern = f"{target_dir.rstrip('/')}/{normalized}"
+        else:
+            pattern = f"*/{value}"
+
+        expr = f'-not -path "{pattern}"'
+        if is_dir:
+            expr += f' -not -path "{pattern}/*"'
+        return expr
+
+    @staticmethod
     def _build_exclude_expr(dir_config: "TargetDirConfig") -> str:
         """Build the find exclusion expression for directories and files.
 
-        Supports both name-based and path-based exclusions. Values containing '/'
-        are treated as relative paths under target_dir and matched via -path.
-        Plain names are matched via -name.
+        NOTE: -delete implies -depth (GNU find documented behavior), which
+        disables -prune. We use -not -path filtering instead.
 
         Args:
             dir_config: The target directory configuration with its exclusions
 
         Returns:
-            A string of find prune/exclude expressions, or empty string if nothing to exclude.
+            A string of -not -path exclusion expressions, or empty string if nothing to exclude.
         """
         parts = []
         target_dir = dir_config.path
 
         for exclude_dir in dir_config.exclude_dirs:
-            match_expr = FileCleanupTask._build_match_expr(exclude_dir, target_dir)
-            parts.append(f"{match_expr} -prune")
+            parts.append(FileCleanupTask._build_not_path_pattern(exclude_dir, target_dir, is_dir=True))
 
         for exclude_file in dir_config.exclude_files:
-            match_expr = FileCleanupTask._build_match_expr(exclude_file, target_dir)
-            parts.append(f"{match_expr} -prune")
+            parts.append(FileCleanupTask._build_not_path_pattern(exclude_file, target_dir, is_dir=False))
 
         if not parts:
             return ""
 
-        return "\\( " + " -o ".join(parts) + " \\) -o "
+        return " ".join(parts) + " "
 
     def _build_cleanup_command(self, dir_config: TargetDirConfig) -> str:
         """Build the shell command for cleaning up files in a single directory.
 
-        The command performs two steps:
-        1. Delete files matching either condition: older than max_age_mins OR larger than max_file_size
-           (excluding configured directories and files)
-        2. Remove empty directories left behind (excluding configured directories)
+        Performance:
+            ``find ... -delete`` (vs ``-exec rm -f {} +``) calls unlink(2)
+            directly without forking a per-batch rm; on dirs with tens of
+            thousands of files this is roughly an order of magnitude faster.
+
+            Empty-dir cleanup uses the same idiom: ``-depth -type d -empty -delete``.
+
+        Steps:
+            1. Delete files (with exclusions) older than max_age_mins OR
+               exceeding max_file_size.
+            2. Remove empty directories left behind (with exclusions).
 
         Args:
             dir_config: The target directory configuration with its exclusions
@@ -184,14 +275,10 @@ class FileCleanupTask(BaseTask):
         size_find_expr = f"-size +{size_bytes}c"
         exclude_expr = self._build_exclude_expr(dir_config)
 
-        # Build directory exclusion for empty dir cleanup
-        dir_exclude_parts = []
+        dir_exclude_not_parts = []
         for exclude_dir in dir_config.exclude_dirs:
-            match_expr = self._build_match_expr(exclude_dir, target_dir)
-            dir_exclude_parts.append(match_expr)
-        dir_exclude_expr = ""
-        if dir_exclude_parts:
-            dir_exclude_expr = "\\( " + " -o ".join(dir_exclude_parts) + " \\) -prune -o "
+            dir_exclude_not_parts.append(self._build_not_path_pattern(exclude_dir, target_dir, is_dir=True))
+        dir_exclude_expr = " ".join(dir_exclude_not_parts) + " " if dir_exclude_not_parts else ""
 
         # Step 1: Delete files (with exclusions) older than max_age_mins OR exceeding max_file_size
         # Step 2: Remove empty directories (bottom-up with -depth, excluding configured dirs)
@@ -200,9 +287,9 @@ class FileCleanupTask(BaseTask):
             f'find "{target_dir}" {exclude_expr}'
             f"-type f "
             f"\\( -mmin +{self.max_age_mins} -o {size_find_expr} \\) "
-            f"-exec rm -f {{}} +; "
+            f"-delete; "
             f'find "{target_dir}" -depth {dir_exclude_expr}'
-            f"-type d -empty -exec rmdir {{}} +; "
+            f"-type d -empty -delete; "
             f'echo "cleanup_done"; '
             f'else echo "dir_not_found"; fi'
         )
@@ -231,7 +318,9 @@ class FileCleanupTask(BaseTask):
             target_dir = dir_config.path
             try:
                 command = self._build_cleanup_command(dir_config)
-                result = await runtime.execute(Command(command=command, shell=True, check=True))
+                result = await runtime.execute(
+                    Command(command=command, shell=True, check=True, sandbox_id="scheduler-task")
+                )
                 output = result.stdout.strip() if result.stdout else ""
                 results[target_dir] = {
                     "exit_code": result.exit_code,

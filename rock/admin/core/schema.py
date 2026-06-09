@@ -102,3 +102,21 @@ class SandboxRecord(Base):
     def to_dict(self) -> dict[str, Any]:
         """Return all non-``None`` column values as a plain dict."""
         return {c.key: getattr(self, c.key) for c in self.__table__.columns if getattr(self, c.key) is not None}
+
+
+class SchedulerTaskRecord(Base):
+    """One row per scheduled task execution. Grouped by taskset_id."""
+
+    __tablename__ = "scheduler_task"
+
+    task_id = Column(String(32), primary_key=True)
+    taskset_id = Column(String(32), nullable=True, index=True)
+    task_type = Column(String(64), nullable=False, index=True)
+    target_workers = Column(_JSONB_VARIANT, nullable=True)
+    creation_timestamp = Column(Float, nullable=False)
+    phase = Column(String(32), nullable=False, default="Pending")
+    assigned_pod = Column(String(128), nullable=False, default="")
+    start_time = Column(Float, nullable=True)
+    completion_time = Column(Float, nullable=True)
+    conditions = Column(_JSONB_VARIANT, nullable=True)
+    status = Column(_JSONB_VARIANT, nullable=True)

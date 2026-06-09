@@ -103,10 +103,19 @@ class K8sOperator(AbstractOperator):
             sandbox_id: Sandbox identifier
 
         Returns:
-            SandboxInfo with current status and user info
+            SandboxInfo with current status and user info, or None if K8s resource not found
         """
-        # Get sandbox info from provider (includes is_alive check)
-        sandbox_info = await self._provider.get_status(sandbox_id)
+        try:
+            sandbox_info = await self._provider.get_status(sandbox_id)
+        except Exception as e:
+            if hasattr(e, "status") and e.status == 404:
+                logger.debug(f"K8s resource for sandbox {sandbox_id} not found, returning None")
+                return None
+            if "is being deleted" in str(e):
+                logger.debug(f"K8s resource for sandbox {sandbox_id} is being deleted, returning None")
+                return None
+            logger.warning(f"Failed to get status from K8s for sandbox {sandbox_id}: {e}")
+            return None
 
         # Get user info from redis if available
         if self._redis_provider:
@@ -130,3 +139,6 @@ class K8sOperator(AbstractOperator):
         """
         logger.info(f"[{sandbox_id}] k8s stop (reason={reason.value})")
         return await self._provider.stop(sandbox_id)
+
+    async def delete(self, config: DockerDeploymentConfig, host_ip: str | None = None) -> bool:
+        raise NotImplementedError("delete is not yet implemented for K8sOperator")

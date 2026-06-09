@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import os
 import random
 import re
@@ -693,10 +694,19 @@ class DockerDeployment(AbstractDeployment):
         # branch and never call docker kill / cleanup.
         self._container_process = await loop.run_in_executor(executor, self._docker_start)
 
-        # Recover the rocklet port from the container's port bindings if not set in config.
-        # When a new actor is created for restart, config.port may be None.
+        # Recover port mappings from the persisted service status file.
+        # When a new actor is created for restart, _service_status is empty,
+        # but the file written by the original actor during start() is still on disk.
+        self._service_status.set_sandbox_id(self._container_name)
+        status_path = PersistedServiceStatus.gen_service_status_path(self._container_name)
+        if os.path.exists(status_path):
+            with open(status_path) as f:
+                data = json.load(f)
+            for port_value, mapping in data.get("port_mapping", {}).items():
+                self._service_status.add_port_mapping(int(port_value), mapping)
+
         if self._config.port is None:
-            self._config.port = await loop.run_in_executor(executor, self._get_rocklet_port_from_inspect)
+            self._config.port = self._service_status.port_mapping.get(Port.PROXY)
         if self._config.port is None:
             raise Exception(f"Cannot determine rocklet port for container {self._container_name}")
 
@@ -716,6 +726,24 @@ class DockerDeployment(AbstractDeployment):
             self._check_stop_task = asyncio.create_task(self._check_stop())
 
         logger.info(f"Container {self._container_name} restarted successfully")
+
+    async def delete(self) -> None:
+        """Remove the container via ``docker rm -f``.
+
+        Idempotent — a container that doesn't exist counts as success because
+        nothing remains to clean up. The actor was previously stopped (or
+        freshly created without start), so there is no
+        ``self._container_process`` / ``self._runtime`` to unwind here.
+        Quota / log cleanup already ran during ``_stop`` and is not repeated.
+        """
+        container_name = self._container_name or (self._config.container_name if self._config else None)
+        if not container_name:
+            logger.warning("delete: no container_name available, skipping docker rm")
+            return
+
+        executor = get_executor()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(executor, DockerUtil.remove_container_force, container_name)
 
     def _get_rocklet_port_from_inspect(self) -> int | None:
         """Read the host-side port mapped to the rocklet (container port 22555) from docker inspect."""

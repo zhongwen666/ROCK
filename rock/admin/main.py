@@ -10,6 +10,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
@@ -17,11 +18,15 @@ from rock import env_vars
 from rock.admin.core.db_provider import DatabaseProvider
 from rock.admin.core.ray_service import RayService
 from rock.admin.core.sandbox_table import SandboxTable
+from rock.admin.core.scheduler_task_table import SchedulerTaskTable
+from rock.admin.entrypoints.admin_ops_api import admin_ops_router, set_ops_service
 from rock.admin.entrypoints.sandbox_api import sandbox_router, set_sandbox_manager
 from rock.admin.entrypoints.sandbox_proxy_api import sandbox_proxy_router, set_sandbox_proxy_service
 from rock.admin.entrypoints.warmup_api import set_warmup_service, warmup_router
 from rock.admin.gem.api import gem_router, set_env_service
-from rock.admin.scheduler.scheduler import SchedulerThread
+from rock.admin.scheduler.scheduler import SchedulerThread, WorkerIPCache
+from rock.admin.scheduler.task_base import BaseTask
+from rock.admin.scheduler.task_factory import TaskFactory
 from rock.admin.scheduler.tasks.sandbox_log_archive_task import (
     set_main_loop_provider as set_archive_main_loop_provider,
 )
@@ -31,6 +36,8 @@ from rock.admin.scheduler.tasks.sandbox_log_archive_task import (
 from rock.admin.scheduler.tasks.sandbox_log_archive_task import (
     set_sandbox_table_provider as set_archive_sandbox_table_provider,
 )
+from rock.admin.service.ops_service import OpsService
+from rock.common.exception import request_validation_exception_handler
 from rock.config import DatabaseConfig, RockConfig, SchedulerConfig
 from rock.logger import init_logger
 from rock.sandbox.gem_manager import GemManager
@@ -51,6 +58,30 @@ args = parser.parse_args()
 
 logger = init_logger("admin")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+def _init_ops_service(
+    rock_config: RockConfig,
+    scheduler_task_table: "SchedulerTaskTable",
+) -> OpsService:
+    """Build OpsService with task registry from scheduler config."""
+    ops_task_registry: dict[str, BaseTask] = {}
+    if rock_config.scheduler.enabled:
+        for task_config in rock_config.scheduler.tasks:
+            if not getattr(task_config, "enabled", True):
+                continue
+            try:
+                task = TaskFactory.create_task(task_config)
+                ops_task_registry[task.type] = task
+            except Exception as e:
+                logger.warning(f"ops_taskset: failed to instantiate '{task_config.task_class}': {e}")
+
+    ops_worker_cache = WorkerIPCache(cache_ttl=rock_config.scheduler.worker_cache_ttl)
+    return OpsService(
+        task_table=scheduler_task_table,
+        task_registry=ops_task_registry,
+        alive_workers_provider=ops_worker_cache.get_alive_workers,
+    )
 
 
 @asynccontextmanager
@@ -103,12 +134,11 @@ async def lifespan(app: FastAPI):
     # config reload propagates to the next task run without re-injection.
     set_archive_sandbox_table_provider(lambda: sandbox_table)
     set_archive_rock_config_provider(lambda: rock_config)
-    # Capture lifespan loop (uvicorn main loop). SandboxLogArchiveTask runs
-    # inside SchedulerThread's child loop; it must dispatch DB calls back to
-    # this main loop so asyncpg pool stays bound here and HTTP handlers don't
-    # break with "Future attached to a different loop".
     _main_loop = asyncio.get_running_loop()
     set_archive_main_loop_provider(lambda: _main_loop)
+
+    # init scheduler task table (DB-backed, multi-pod safe)
+    scheduler_task_table = SchedulerTaskTable(db_provider)
 
     # init scheduler thread
     scheduler_thread = None
@@ -164,6 +194,8 @@ async def lifespan(app: FastAPI):
         elif rock_config.scheduler.enabled:
             logger.info("Scheduler thread skipped on non-primary pod")
 
+        set_ops_service(_init_ops_service(rock_config, scheduler_task_table))
+
     else:
         sandbox_manager = SandboxProxyService(rock_config=rock_config, meta_store=meta_store)
         set_sandbox_proxy_service(sandbox_manager)
@@ -202,6 +234,12 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 # --- CORS configuration end ---
+
+
+# Pydantic validation errors are matched by FastAPI before the catch-all Exception
+# handler below — register an explicit override so they come out as RockResponse
+# envelopes instead of the default 422 ``{"detail": [...]}``.
+app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 
 
 @app.exception_handler(Exception)
@@ -263,6 +301,7 @@ def main():
     # config router
     if args.role == "admin":
         app.include_router(sandbox_router, prefix="/apis/envs/sandbox/v1", tags=["sandbox"])
+        app.include_router(admin_ops_router, prefix="/apis/envs/sandbox/v1/ops", tags=["admin-ops"])
     else:
         app.include_router(sandbox_proxy_router, prefix="/apis/envs/sandbox/v1", tags=["sandbox"])
     app.include_router(warmup_router, prefix="/apis/envs/sandbox/v1", tags=["warmup"])
