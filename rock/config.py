@@ -200,6 +200,16 @@ class SchedulerConfig:
 
 
 @dataclass
+class ImageRegistryMirror:
+    """A single internal registry that may host a mirrored copy of the sandbox image."""
+
+    registry: str = ""
+    namespace: str = ""
+    username: str | None = None
+    password: str | None = None
+
+
+@dataclass
 class PoolConfig:
     """Pool configuration with resource and port settings."""
 
@@ -336,6 +346,8 @@ class RockConfig:
     proxy_service: ProxyServiceConfig = field(default_factory=ProxyServiceConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    image_registry_mirrors: list[ImageRegistryMirror] = field(default_factory=list)
+    image_mirror_lookup_allowlist: list[str] = field(default_factory=list)
     nacos_provider: NacosConfigProvider | None = None
 
     @classmethod
@@ -391,6 +403,11 @@ class RockConfig:
             kwargs["scheduler"] = SchedulerConfig(**config["scheduler"])
         if "database" in config:
             kwargs["database"] = DatabaseConfig(**config["database"])
+        if "image_registry_mirrors" in config:
+            raw_mirrors = config["image_registry_mirrors"] or []
+            kwargs["image_registry_mirrors"] = [ImageRegistryMirror(**m) for m in raw_mirrors]
+        if "image_mirror_lookup_allowlist" in config:
+            kwargs["image_mirror_lookup_allowlist"] = list(config["image_mirror_lookup_allowlist"] or [])
 
         return cls(**kwargs)
 
@@ -488,6 +505,14 @@ class RockConfig:
             if key in nacos_result:
                 setattr(self, attr_name, config_class(**nacos_result[key]))
 
+        if "image_registry_mirrors" in nacos_result:
+            raw_mirrors = nacos_result["image_registry_mirrors"] or []
+            self.image_registry_mirrors = [ImageRegistryMirror(**m) for m in raw_mirrors]
+        if "image_mirror_lookup_allowlist" in nacos_result:
+            self.image_mirror_lookup_allowlist = list(nacos_result["image_mirror_lookup_allowlist"] or [])
+
         logger.info(
             f"Updated config from Nacos: sandbox_config={self.sandbox_config}, proxy_service={self.proxy_service}"
+            f", image_registry_mirrors={self.image_registry_mirrors}"
+            f", image_mirror_lookup_allowlist={self.image_mirror_lookup_allowlist}"
         )

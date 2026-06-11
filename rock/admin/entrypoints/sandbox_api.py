@@ -1,6 +1,9 @@
 import math
+import re
+import time
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 
 from rock.actions import (
@@ -38,9 +41,17 @@ from rock.common.constants import (
 )
 from rock.common.exception import handle_exceptions
 from rock.common.validation import NonBlankStr
+from rock.config import ImageRegistryMirror
 from rock.deployments.config import AcceleratorType, DockerDeploymentConfig
+from rock.logger import init_logger
 from rock.sandbox.sandbox_manager import SandboxManager
 from rock.sdk.common.exceptions import BadRequestRockError
+from rock.utils.docker import ImageUtil
+
+logger = init_logger(__name__)
+
+_MIRROR_PROBE_CACHE: dict[str, tuple[bool, float]] = {}
+_MIRROR_PROBE_TTL_SECONDS = 60.0
 
 sandbox_router = APIRouter()
 sandbox_manager: SandboxManager
@@ -92,6 +103,149 @@ async def _apply_disk_limits(config: DockerDeploymentConfig) -> None:
             disk_limit_rootfs = nacos_rootfs
 
     config.disk_limit_rootfs = disk_limit_rootfs
+
+
+def _probe_cache_get(candidate: str) -> bool | None:
+    entry = _MIRROR_PROBE_CACHE.get(candidate)
+    if entry is None:
+        return None
+    hit, expires_at = entry
+    if expires_at < time.monotonic():
+        _MIRROR_PROBE_CACHE.pop(candidate, None)
+        return None
+    return hit
+
+
+def _probe_cache_set(candidate: str, hit: bool) -> None:
+    _MIRROR_PROBE_CACHE[candidate] = (hit, time.monotonic() + _MIRROR_PROBE_TTL_SECONDS)
+
+
+def _apply_mirror_hit(config: DockerDeploymentConfig, mirror, candidate: str) -> None:
+    config.image = candidate
+    if mirror.username and mirror.password:
+        config.registry_username = mirror.username
+        config.registry_password = mirror.password
+
+
+def _parse_bearer_challenge(header: str) -> dict[str, str]:
+    """Parse ``realm``, ``service``, ``scope`` from a Bearer WWW-Authenticate header."""
+    return {m.group(1): m.group(2) for m in re.finditer(r'(\w+)="([^"]*)"', header)}
+
+
+async def _http_probe_manifest(
+    registry: str,
+    repo: str,
+    tag: str,
+    username: str | None = None,
+    password: str | None = None,
+    timeout: float = 5,
+) -> bool:
+    """Check whether ``repo:tag`` exists on *registry* via the v2 manifest API."""
+    url = f"https://{registry}/v2/{repo}/manifests/{tag}"
+    headers = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
+    auth = (username, password) if username and password else None
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, headers=headers, auth=auth)
+
+        if resp.status_code == 401 and "www-authenticate" in resp.headers:
+            www_auth = resp.headers["www-authenticate"]
+            if www_auth.startswith("Bearer "):
+                params = _parse_bearer_challenge(www_auth)
+                realm = params.get("realm", "")
+                service = params.get("service", "")
+                scope = params.get("scope", "")
+                token_url = f"{realm}?service={service}&scope={scope}"
+                token_resp = await client.get(token_url, auth=auth)
+                if token_resp.status_code == 200:
+                    data = token_resp.json()
+                    token = data.get("token") or data.get("access_token")
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                        resp = await client.get(url, headers=headers)
+
+        return resp.status_code == 200
+
+
+async def _apply_image_registry_mirror(config: DockerDeploymentConfig) -> None:
+    """Rewrite ``config.image`` to an internal mirror copy when one exists.
+
+    Gated by ``rock_config.image_mirror_lookup_allowlist`` (opt-in): empty list
+    disables the lookup for every image; ``["*"]`` enables it for all; otherwise
+    only images whose full string starts with one of the listed prefixes are
+    considered.
+
+    For allowed images, iterates ``rock_config.image_registry_mirrors`` in
+    declared order, probes via the registry v2 manifest API and uses the first
+    hit. Digest references (``name@sha256:...``) are skipped entirely.
+    """
+    nacos = sandbox_manager.rock_config.nacos_provider
+    nacos_cfg = (await nacos.get_config() or {}) if nacos else {}
+
+    allowlist = nacos_cfg.get(
+        "image_mirror_lookup_allowlist",
+        sandbox_manager.rock_config.image_mirror_lookup_allowlist,
+    )
+    if not allowlist:
+        return
+    if "*" not in allowlist and not any(config.image.startswith(p) for p in allowlist):
+        return
+
+    raw_mirrors = nacos_cfg.get("image_registry_mirrors")
+    if raw_mirrors is not None:
+        mirrors = [ImageRegistryMirror(**m) for m in raw_mirrors]
+    else:
+        mirrors = sandbox_manager.rock_config.image_registry_mirrors
+    if not mirrors:
+        return
+
+    _, repo_and_tag = ImageUtil.parse_registry_and_others(config.image)
+    if "/" in repo_and_tag:
+        _, name_tag = repo_and_tag.split("/", 1)
+    else:
+        name_tag = repo_and_tag
+    if "@" in name_tag:
+        logger.info(
+            f"image registry mirror skip for digest reference {config.image!r} "
+            "(content-addressed, mirror replacement would change semantics)"
+        )
+        return
+    if ":" not in name_tag:
+        name_tag = f"{name_tag}:{ImageUtil.DEFAULT_TAG}"
+    original_image = config.image
+
+    image_name, tag = name_tag.rsplit(":", 1)
+    for mirror in mirrors:
+        if not mirror.registry or not mirror.namespace:
+            continue
+        candidate = f"{mirror.registry}/{mirror.namespace}/{name_tag}"
+
+        cached = _probe_cache_get(candidate)
+        if cached is True:
+            logger.info(f"image registry mirror hit (cached): {original_image!r} -> {candidate!r}")
+            _apply_mirror_hit(config, mirror, candidate)
+            return
+        if cached is False:
+            continue
+
+        try:
+            hit = await _http_probe_manifest(
+                registry=mirror.registry,
+                repo=f"{mirror.namespace}/{image_name}",
+                tag=tag,
+                username=mirror.username,
+                password=mirror.password,
+            )
+        except Exception as e:
+            logger.warning(f"image registry mirror probe failed for {candidate!r}: {e}")
+            continue
+
+        _probe_cache_set(candidate, hit)
+        if hit:
+            logger.info(f"image registry mirror hit: {original_image!r} -> {candidate!r}")
+            _apply_mirror_hit(config, mirror, candidate)
+            return
+    logger.info(f"image registry mirror miss for {original_image!r}, keep original")
 
 
 async def _apply_accelerator_type_validation(config: DockerDeploymentConfig) -> None:
@@ -166,6 +320,7 @@ async def start(request: SandboxStartRequest) -> RockResponse[SandboxStartRespon
     await _apply_kata_runtime_switch(config)
     await _apply_kata_disk_size(config)
     await _apply_disk_limits(config)
+    await _apply_image_registry_mirror(config)
     sandbox_start_response = await sandbox_manager.start(config)
     return RockResponse(result=sandbox_start_response)
 
@@ -182,6 +337,7 @@ async def start_async(
     await _apply_kata_disk_size(config)
     await _apply_cpu_overcommit_default(config, headers.user_info.get("rock_authorization"))
     await _apply_disk_limits(config)
+    await _apply_image_registry_mirror(config)
     sandbox_start_response = await sandbox_manager.start_async(
         config,
         user_info=headers.user_info,

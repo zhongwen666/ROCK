@@ -1,11 +1,12 @@
 import tempfile
 import textwrap
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
 
-from rock.config import RockConfig, RuntimeConfig, _resolve_k8s_template_includes
+from rock.config import ImageRegistryMirror, RockConfig, RuntimeConfig, _resolve_k8s_template_includes
 
 
 @pytest.mark.asyncio
@@ -150,6 +151,67 @@ def test_sandbox_config_coerces_nested_dicts_from_yaml():
     assert cfg.log.keep_days_before_archive == 7
     assert isinstance(cfg.file_transfer, SandboxFileTransferConfig)
     assert cfg.file_transfer.prefix == "rock-transfer/"
+
+
+# ===== Nacos hot-reload for image mirror config =====
+
+
+@pytest.mark.asyncio
+async def test_nacos_update_loads_image_registry_mirrors():
+    rock_config = RockConfig()
+    rock_config.nacos_provider = MagicMock()
+    rock_config.nacos_provider.get_config = AsyncMock(
+        return_value={
+            "image_registry_mirrors": [
+                {"registry": "mirror.example.com", "namespace": "ns", "username": "u", "password": "p"},
+                {"registry": "mirror2.example.com", "namespace": "ns2"},
+            ],
+            "image_mirror_lookup_allowlist": ["swe-bench:", "aaa/bbb/"],
+        }
+    )
+
+    await rock_config.update()
+
+    assert len(rock_config.image_registry_mirrors) == 2
+    assert rock_config.image_registry_mirrors[0] == ImageRegistryMirror(
+        registry="mirror.example.com", namespace="ns", username="u", password="p"
+    )
+    assert rock_config.image_registry_mirrors[1].username is None
+    assert rock_config.image_mirror_lookup_allowlist == ["swe-bench:", "aaa/bbb/"]
+
+
+@pytest.mark.asyncio
+async def test_nacos_update_empty_mirrors_clears_list():
+    rock_config = RockConfig()
+    rock_config.image_registry_mirrors = [ImageRegistryMirror(registry="old.com", namespace="old")]
+    rock_config.image_mirror_lookup_allowlist = ["*"]
+    rock_config.nacos_provider = MagicMock()
+    rock_config.nacos_provider.get_config = AsyncMock(
+        return_value={
+            "image_registry_mirrors": [],
+            "image_mirror_lookup_allowlist": [],
+        }
+    )
+
+    await rock_config.update()
+
+    assert rock_config.image_registry_mirrors == []
+    assert rock_config.image_mirror_lookup_allowlist == []
+
+
+@pytest.mark.asyncio
+async def test_nacos_update_without_mirror_keys_preserves_existing():
+    rock_config = RockConfig()
+    rock_config.image_registry_mirrors = [ImageRegistryMirror(registry="keep.com", namespace="ns")]
+    rock_config.image_mirror_lookup_allowlist = ["*"]
+    rock_config.nacos_provider = MagicMock()
+    rock_config.nacos_provider.get_config = AsyncMock(return_value={"sandbox_config": {}})
+
+    await rock_config.update()
+
+    assert len(rock_config.image_registry_mirrors) == 1
+    assert rock_config.image_registry_mirrors[0].registry == "keep.com"
+    assert rock_config.image_mirror_lookup_allowlist == ["*"]
 
 
 # ===== _resolve_k8s_template_includes =====
