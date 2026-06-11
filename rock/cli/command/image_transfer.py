@@ -78,9 +78,8 @@ async def run_one_sandbox(idx: int, chunk_file: str, args) -> dict:
         cfg_kwargs["base_url"] = args.base_url
     if getattr(args, "auth_token", None):
         cfg_kwargs["xrl_authorization"] = args.auth_token
-    # 沙箱拉 base image 需要凭证(沙箱镜像和目标 ACR 同一个 registry)
-    cfg_kwargs["registry_username"] = os.environ["DEST_USER"]
-    cfg_kwargs["registry_password"] = os.environ["DEST_PASS"]
+    # 沙箱镜像走匿名拉取(默认应为公共镜像);DEST_USER/DEST_PASS 仅用于目标 registry 的推送,
+    # 不参与沙箱基础镜像的拉取。如确有私有 sandbox image 需求,后续再单独引入凭据入口。
 
     config = SandboxConfig(**cfg_kwargs)
     sandbox = Sandbox(config)
