@@ -8,8 +8,8 @@ ROCK Admin exposes a proxy layer that lets you reach services running **inside**
 
 | Mode | Endpoint | Use it for |
 |------|----------|------------|
-| HTTP Proxy | `/sandboxes/{sandbox_id}/proxy/...` | REST APIs, web UIs, file downloads, any HTTP/1.1 traffic |
-| WebSocket Proxy | `ws(s)://.../sandboxes/{sandbox_id}/proxy/...` | Real-time channels, streaming, browser-based WS clients |
+| HTTP Proxy | `/sandboxes/:sandbox_id/proxy/...` | REST APIs, web UIs, file downloads, any HTTP/1.1 traffic |
+| WebSocket Proxy | `ws(s)://.../sandboxes/:sandbox_id/proxy/...` | Real-time channels, streaming, browser-based WS clients |
 
 Both modes route by `sandbox_id`. The sandbox does **not** need a public IP — Admin terminates the client connection and forwards it to the right runtime inside the cluster.
 
@@ -21,8 +21,9 @@ Forward any HTTP request to a service inside the sandbox.
 
 ### Endpoint
 
-```http
-{GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS} {ROCK_BASE_URL}/sandboxes/{sandbox_id}/proxy[/{path}]
+```text
+Methods : GET | POST | PUT | DELETE | PATCH | HEAD | OPTIONS
+URL     : $ROCK_BASE_URL/sandboxes/:sandbox_id/proxy[/:path]
 ```
 
 - Method, headers, query string, and body are forwarded as-is to the target service.
@@ -68,8 +69,8 @@ For services that expect a `ws://` (or `wss://`) connection — typical for stre
 
 ### Endpoint
 
-```http
-ws(s)://{ROCK_BASE_URL}/sandboxes/{sandbox_id}/proxy/{path}
+```text
+ws(s)://$ROCK_BASE_URL/sandboxes/:sandbox_id/proxy/:path
 ```
 
 - The original WebSocket handshake (subprotocols, custom headers) is forwarded.
