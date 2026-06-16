@@ -63,11 +63,10 @@ class SandboxLogConfig:
     bucket / credentials still belong to OssConfig.primary.
     """
 
-    archive_prefix: str = ""
+    archive_prefix: str = "rock-archives/"
     """OSS object key prefix under OssConfig.primary.bucket for sandbox-log
-    archives. Empty (default) means each deployment's YAML must opt-in
-    explicitly to a value matching its OSS bucket lifecycle rule (e.g.
-    "rock-archives/")."""
+    archives. The canonical default ``rock-archives/`` ensures all clusters
+    write to a unified namespace. Override only for migration scenarios."""
 
     keep_days_before_archive: int = 3
     """Days to wait after sandbox stop before archiving. Gives operators
@@ -201,6 +200,16 @@ class SchedulerConfig:
 
 
 @dataclass
+class ImageRegistryMirror:
+    """A single internal registry that may host a mirrored copy of the sandbox image."""
+
+    registry: str = ""
+    namespace: str = ""
+    username: str | None = None
+    password: str | None = None
+
+
+@dataclass
 class PoolConfig:
     """Pool configuration with resource and port settings."""
 
@@ -264,6 +273,12 @@ class RuntimeConfig:
     user_defined_tags: dict = field(default_factory=dict)
     sandbox_disk_limit_rootfs: str | None = None
     """Default rootfs quota per container. None means no limit. Can be overridden by nacos key 'default_disk_limit'."""
+
+    instance_registry_mirrors: list[str] = field(default_factory=list)
+    """Registry mirrors injected into each launched sandbox as
+    INSTANCE_ROCK_REGISTRY=<comma-joined>. Each entry is a host/namespace
+    string (e.g. "reg-a.aliyuncs.com/mirror-1"). When empty, the env var is
+    not set and downstream tools skip mirror rewriting."""
 
     def __post_init__(self) -> None:
         # Convert dict to StandardSpec if needed
@@ -337,6 +352,8 @@ class RockConfig:
     proxy_service: ProxyServiceConfig = field(default_factory=ProxyServiceConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    image_registry_mirrors: list[ImageRegistryMirror] = field(default_factory=list)
+    image_mirror_lookup_allowlist: list[str] = field(default_factory=list)
     nacos_provider: NacosConfigProvider | None = None
 
     @classmethod
@@ -392,6 +409,11 @@ class RockConfig:
             kwargs["scheduler"] = SchedulerConfig(**config["scheduler"])
         if "database" in config:
             kwargs["database"] = DatabaseConfig(**config["database"])
+        if "image_registry_mirrors" in config:
+            raw_mirrors = config["image_registry_mirrors"] or []
+            kwargs["image_registry_mirrors"] = [ImageRegistryMirror(**m) for m in raw_mirrors]
+        if "image_mirror_lookup_allowlist" in config:
+            kwargs["image_mirror_lookup_allowlist"] = list(config["image_mirror_lookup_allowlist"] or [])
 
         return cls(**kwargs)
 
@@ -489,6 +511,20 @@ class RockConfig:
             if key in nacos_result:
                 setattr(self, attr_name, config_class(**nacos_result[key]))
 
+        if "image_registry_mirrors" in nacos_result:
+            raw_mirrors = nacos_result["image_registry_mirrors"] or []
+            self.image_registry_mirrors = [ImageRegistryMirror(**m) for m in raw_mirrors]
+        if "image_mirror_lookup_allowlist" in nacos_result:
+            self.image_mirror_lookup_allowlist = list(nacos_result["image_mirror_lookup_allowlist"] or [])
+
+        if "runtime" in nacos_result and isinstance(nacos_result["runtime"], dict):
+            runtime_overrides = nacos_result["runtime"]
+            if "instance_registry_mirrors" in runtime_overrides:
+                self.runtime.instance_registry_mirrors = list(runtime_overrides["instance_registry_mirrors"] or [])
+
         logger.info(
             f"Updated config from Nacos: sandbox_config={self.sandbox_config}, proxy_service={self.proxy_service}"
+            f", image_registry_mirrors={self.image_registry_mirrors}"
+            f", image_mirror_lookup_allowlist={self.image_mirror_lookup_allowlist}"
+            f", instance_registry_mirrors={self.runtime.instance_registry_mirrors}"
         )

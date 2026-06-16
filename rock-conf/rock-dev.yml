@@ -44,6 +44,22 @@ k8s:
                   rocklet
 
 
+# Image registry mirror — configured via Nacos (hot-reload supported).
+# Nacos YAML format:
+#
+# image_registry_mirrors:
+#   - registry: "rock-registry.cn-hangzhou.cr.aliyuncs.com"
+#     namespace: "rock-public"
+#     username: "user"            # optional
+#     password: "<plaintext>"     # optional
+#   - registry: "rock-registry-backup.cn-hangzhou.cr.aliyuncs.com"
+#     namespace: "rock-mirror"
+#
+# image_mirror_lookup_allowlist:  # empty = disabled, ["*"] = all images
+#   - "*"
+#   - "swe-bench:"               # bare image name prefix
+#   - "aaaaaa/bbb/"              # registry/namespace prefix
+
 # Runtime configuration
 runtime:
   # Operator type: 'ray' or 'k8s'
