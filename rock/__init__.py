@@ -18,3 +18,8 @@ __all__ = [
     "CommandRockError",
     "raise_for_code",
 ]
+
+try:
+    import xrl  # noqa: F401
+except ImportError:
+    pass
