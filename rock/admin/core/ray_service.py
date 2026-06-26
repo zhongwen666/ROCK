@@ -31,7 +31,7 @@ class RayService:
         self._ray_rwlock = AsyncRWLock()
         self._ray_request_count = 0
         self._ray_establish_time = time.time()
-        self._executor = executor or ThreadPoolExecutor(max_workers=10)
+        self._executor = executor or ThreadPoolExecutor(max_workers=200)
 
     def init(self):
         ray.init(
