@@ -90,7 +90,11 @@ class SandboxManager(BaseManager):
     async def _check_sandbox_exists_in_redis(self, config: DeploymentConfig):
         if isinstance(config, DockerDeploymentConfig) and config.container_name:
             sandbox_id = config.container_name
-            if await self._meta_store.exists(sandbox_id):
+            self._meta_store._redis.log_pool_detailed_status()
+            t0 = time.perf_counter()
+            exists = await self._meta_store.exists(sandbox_id)
+            logger.info(f"[startup_timing] [{config.image}] Redis exists check took {time.perf_counter() - t0:.3f} s")
+            if exists:
                 raise BadRequestRockError(f"Sandbox {sandbox_id} already exists")
 
     def _setup_sandbox_actor_metadata(self, sandbox_actor: SandboxActor, user_info: UserInfo) -> None:
@@ -116,13 +120,12 @@ class SandboxManager(BaseManager):
         sandbox_info["state"] = State.PENDING
         sandbox_info["create_time"] = get_iso8601_timestamp()
 
-    @monitor_sandbox_operation()
+    @monitor_sandbox_operation(skip_user_info=True)
     async def start_async(
         self, config: DeploymentConfig, user_info: UserInfo = {}, cluster_info: ClusterInfo = {}
     ) -> SandboxStartResponse:
         total_start = time.perf_counter()
-        with StageTimer("startup_timing", f"[{config.image}] Redis exists check", logger):
-            await self._check_sandbox_exists_in_redis(config)
+        await self._check_sandbox_exists_in_redis(config)
         self.validate_sandbox_spec(self.rock_config.runtime, config)
         with StageTimer("startup_timing", f"[{config.image}] Init config", logger):
             docker_deployment_config: DockerDeploymentConfig = await self.deployment_manager.init_config(config)
@@ -449,6 +452,4 @@ class SandboxManager(BaseManager):
                 parse_size_to_bytes(deployment_config.disk_limit_rootfs)
             except ValueError as e:
                 logger.warning(f"Invalid disk_limit_rootfs size: {deployment_config.disk_limit_rootfs}", exc_info=e)
-                raise BadRequestRockError(
-                    f"Invalid disk_limit_rootfs size: {deployment_config.disk_limit_rootfs}"
-                )
+                raise BadRequestRockError(f"Invalid disk_limit_rootfs size: {deployment_config.disk_limit_rootfs}")

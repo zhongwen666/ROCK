@@ -61,7 +61,9 @@ class RayOperator(AbstractOperator):
         async with self._ray_service.get_ray_rwlock().read_lock():
             sandbox_id = config.container_name
             logger.info(f"[{sandbox_id}] start_async params:{json.dumps(config.model_dump(), indent=2)}")
+            t0 = time.perf_counter()
             sandbox_actor: SandboxActor = await self.create_actor(config)
+            logger.info(f"[startup_timing] [{sandbox_id}] Ray create_actor " f"took {time.perf_counter() - t0:.3f} s")
             sandbox_actor.set_metrics_endpoint.remote(self._runtime_config.metrics_endpoint)
             sandbox_actor.set_user_defined_tags.remote(self._runtime_config.user_defined_tags)
             sandbox_actor.start.remote()
@@ -72,7 +74,11 @@ class RayOperator(AbstractOperator):
             sandbox_actor.set_user_id.remote(user_id)
             sandbox_actor.set_experiment_id.remote(experiment_id)
             sandbox_actor.set_namespace.remote(namespace)
+            t0 = time.perf_counter()
             sandbox_info: SandboxInfo = await self._ray_service.async_ray_get(sandbox_actor.sandbox_info.remote())
+            logger.info(
+                f"[startup_timing] [{sandbox_id}] Ray sandbox_info.remote() " f"took {time.perf_counter() - t0:.3f} s"
+            )
             sandbox_info["user_id"] = user_id
             sandbox_info["experiment_id"] = experiment_id
             sandbox_info["namespace"] = namespace
@@ -83,8 +89,6 @@ class RayOperator(AbstractOperator):
 
     async def get_status(self, sandbox_id: str) -> SandboxInfo | None:
         if self.use_rocklet():
-            total_start = time.perf_counter()
-
             t0 = time.perf_counter()
             sandbox_info: SandboxInfo = await build_sandbox_from_redis(self._redis_provider, sandbox_id)
             logger.info(
@@ -115,10 +119,6 @@ class RayOperator(AbstractOperator):
                 sandbox_info["state"] = State.RUNNING
             sandbox_info.update(remote_status.to_dict())
 
-            logger.info(
-                f"[operator_get_status_timing] [{sandbox_id}] rocklet get_status total "
-                f"took {time.perf_counter() - total_start:.3f} s"
-            )
             return sandbox_info
         async with self._ray_service.get_ray_rwlock().read_lock():
             total_start = time.perf_counter()
