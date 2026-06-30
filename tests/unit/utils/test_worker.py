@@ -1,6 +1,6 @@
 import importlib
 
-from rock.utils.worker import compute_pool_size, resolve_workers
+from rock.utils.worker import resolve_workers
 
 
 def test_rock_proxy_workers_defaults_to_zero(monkeypatch):
@@ -44,15 +44,3 @@ def test_resolve_workers_local_envs_force_one_over_override():
 def test_resolve_workers_unknown_env_defaults_param_none():
     # env defaults to None (treated as non-local) — preserves explicit override
     assert resolve_workers("proxy", override=4, env_workers=0) == 4
-
-
-def test_compute_pool_size_divides_by_workers():
-    assert compute_pool_size(base=100, workers=8) == 12
-
-
-def test_compute_pool_size_floor_two():
-    assert compute_pool_size(base=100, workers=200) == 2
-
-
-def test_compute_pool_size_single_worker_keeps_base():
-    assert compute_pool_size(base=100, workers=1) == 100

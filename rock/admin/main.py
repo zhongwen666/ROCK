@@ -49,7 +49,7 @@ from rock.sandbox.service.warmup_service import WarmupService
 from rock.utils import EAGLE_EYE_TRACE_ID, sandbox_id_ctx_var, trace_id_ctx_var
 from rock.utils.providers import RedisProvider
 from rock.utils.system import is_primary_pod
-from rock.utils.worker import compute_pool_size, resolve_workers
+from rock.utils.worker import resolve_workers
 
 
 def _parse_args():
@@ -125,10 +125,7 @@ async def lifespan(app: FastAPI):
     db_url = rock_config.database.url or "sqlite+aiosqlite:///:memory:"
     if not rock_config.database.url:
         logger.info("database.url is not configured, falling back to SQLite in-memory")
-    workers = int(os.getenv("ROCK_PROXY_WORKERS", "1")) or 1
-    effective_pool = compute_pool_size(base=rock_config.database.pool_size, workers=workers)
-    db_provider = DatabaseProvider(db_config=DatabaseConfig(url=db_url, pool_size=effective_pool))
-    logger.info(f"db pool_size={effective_pool} (base={rock_config.database.pool_size}, workers={workers})")
+    db_provider = DatabaseProvider(db_config=DatabaseConfig(url=db_url))
     await db_provider.init()
     if not rock_config.database.url:
         await db_provider.create_tables()

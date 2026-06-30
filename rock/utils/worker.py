@@ -27,10 +27,3 @@ def resolve_workers(role: str, override: int | None, env_workers: int, env: str 
     if env_workers and env_workers > 0:
         return env_workers
     return 1
-
-
-def compute_pool_size(base: int, workers: int) -> int:
-    """Per-worker DB pool so that workers * pool ~= base (no per-pod regression)."""
-    if workers <= 1:
-        return base
-    return max(MIN_POOL_SIZE, base // workers)
