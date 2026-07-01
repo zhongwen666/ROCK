@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     ROCK_LOGGING_PATH: str | None = None
     ROCK_LOGGING_FILE_NAME: str | None = None
     ROCK_LOGGING_LEVEL: str | None = None
+    ROCK_LOGGING_APPEND: bool = False
     ROCK_SERVICE_STATUS_DIR: str | None = None
     ROCK_SCHEDULER_STATUS_DIR: str | None = None
     ROCK_CONFIG: str | None = None
@@ -78,6 +79,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "ROCK_LOGGING_PATH": lambda: os.getenv("ROCK_LOGGING_PATH"),
     "ROCK_LOGGING_FILE_NAME": lambda: os.getenv("ROCK_LOGGING_FILE_NAME", "rocklet.log"),
     "ROCK_LOGGING_LEVEL": lambda: os.getenv("ROCK_LOGGING_LEVEL", "INFO"),
+    "ROCK_LOGGING_APPEND": lambda: os.getenv("ROCK_LOGGING_APPEND", "false").lower() == "true",
     "ROCK_SERVICE_STATUS_DIR": lambda: os.getenv("ROCK_SERVICE_STATUS_DIR", "/tmp"),
     "ROCK_SCHEDULER_STATUS_DIR": lambda: os.getenv("ROCK_SCHEDULER_STATUS_DIR", "/data/scheduler_status"),
     "ROCK_CONFIG": lambda: os.getenv("ROCK_CONFIG"),
