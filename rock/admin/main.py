@@ -331,6 +331,8 @@ def main():
         host="0.0.0.0",
         port=args.port,
         workers=workers,
+        loop="uvloop",
+        http="httptools",
         ws_ping_interval=None,
         ws_ping_timeout=None,
         timeout_keep_alive=30,
