@@ -34,8 +34,10 @@ def _make_manager(mirrors, allowlist=None):
 def clear_probe_cache():
     """Mirror probe cache is process-local — wipe between tests to avoid cross-test leakage."""
     sandbox_api._MIRROR_PROBE_CACHE.clear()
+    sandbox_api._probe_client = None
     yield
     sandbox_api._MIRROR_PROBE_CACHE.clear()
+    sandbox_api._probe_client = None
 
 
 @pytest.fixture
@@ -118,9 +120,7 @@ async def test_registry_only_miss_falls_back_to_namespace_replace(restore_sandbo
 
 async def test_original_namespace_equals_mirror_namespace_deduplicates(restore_sandbox_manager, stub_manifest_probe):
     """When original namespace matches mirror namespace, only one candidate is probed (no redundant request)."""
-    sandbox_api.sandbox_manager = _make_manager(
-        [ImageRegistryMirror(registry="rock-a.example.com", namespace="foo")]
-    )
+    sandbox_api.sandbox_manager = _make_manager([ImageRegistryMirror(registry="rock-a.example.com", namespace="foo")])
     config = DockerDeploymentConfig(image="gcr.io/foo/python:3.11")
     stub_manifest_probe.probe_results.append(True)
 
@@ -194,7 +194,9 @@ async def test_user_credentials_cleared_when_mirror_has_no_auth(restore_sandbox_
     sandbox_api.sandbox_manager = _make_manager(
         [ImageRegistryMirror(registry="rock-a.example.com", namespace="rock-public")]
     )
-    config = DockerDeploymentConfig(image="my-registry.io/myimage:v1", registry_username="orig-user", registry_password="orig-pw")
+    config = DockerDeploymentConfig(
+        image="my-registry.io/myimage:v1", registry_username="orig-user", registry_password="orig-pw"
+    )
     stub_manifest_probe.probe_results.append(True)
 
     await sandbox_api._apply_image_registry_mirror(config)
@@ -216,7 +218,9 @@ async def test_user_credentials_replaced_by_mirror_credentials(restore_sandbox_m
             ),
         ]
     )
-    config = DockerDeploymentConfig(image="my-registry.io/myimage:v1", registry_username="orig-user", registry_password="orig-pw")
+    config = DockerDeploymentConfig(
+        image="my-registry.io/myimage:v1", registry_username="orig-user", registry_password="orig-pw"
+    )
     stub_manifest_probe.probe_results.append(True)
 
     await sandbox_api._apply_image_registry_mirror(config)
@@ -509,3 +513,34 @@ def test_image_registry_mirror_field_default_empty():
 
 def test_image_mirror_lookup_allowlist_field_default_empty():
     assert RockConfig.__dataclass_fields__["image_mirror_lookup_allowlist"].default_factory() == []
+
+
+def test_get_probe_client_returns_same_instance():
+    """_get_probe_client must return the same client on repeated calls (pool reuse)."""
+    c1 = sandbox_api._get_probe_client()
+    c2 = sandbox_api._get_probe_client()
+    assert c1 is c2
+
+
+def test_get_probe_client_creates_new_when_closed():
+    """If the cached client is closed, _get_probe_client must create a fresh one."""
+    c1 = sandbox_api._get_probe_client()
+    # Simulate close (sync is fine — httpx.AsyncClient.is_closed flips True)
+    c1._transport._pool._max_connections = 0  # sanity: it's an AsyncClient
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(c1.aclose())
+    assert c1.is_closed
+
+    c2 = sandbox_api._get_probe_client()
+    assert c2 is not c1
+    assert not c2.is_closed
+
+
+def test_get_probe_client_pool_limits():
+    """Connection pool limits must match the configured values (300 global)."""
+    client = sandbox_api._get_probe_client()
+    limits = client._transport._pool._max_connections
+    keepalive = client._transport._pool._max_keepalive_connections
+    assert limits == 300
+    assert keepalive == 300

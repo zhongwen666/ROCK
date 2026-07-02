@@ -52,6 +52,18 @@ logger = init_logger(__name__)
 
 _MIRROR_PROBE_CACHE: dict[str, tuple[bool, float]] = {}
 _MIRROR_PROBE_TTL_SECONDS = 60.0
+_probe_client: httpx.AsyncClient | None = None  # ponytail: process-lifetime client, reused across probes
+
+
+def _get_probe_client() -> httpx.AsyncClient:
+    global _probe_client
+    if _probe_client is None or _probe_client.is_closed:
+        _probe_client = httpx.AsyncClient(
+            timeout=5,
+            limits=httpx.Limits(max_connections=300, max_keepalive_connections=300),
+        )
+    return _probe_client
+
 
 sandbox_router = APIRouter()
 sandbox_manager: SandboxManager
@@ -141,7 +153,6 @@ async def _http_probe_manifest(
     tag: str,
     username: str | None = None,
     password: str | None = None,
-    timeout: float = 5,
 ) -> bool:
     """Check whether ``repo:tag`` exists on *registry* via the v2 manifest API."""
     url = f"https://{registry}/v2/{repo}/manifests/{tag}"
@@ -157,26 +168,26 @@ async def _http_probe_manifest(
     }
     auth = (username, password) if username and password else None
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, headers=headers, auth=auth)
+    client = _get_probe_client()
+    resp = await client.get(url, headers=headers, auth=auth)
 
-        if resp.status_code == 401 and "www-authenticate" in resp.headers:
-            www_auth = resp.headers["www-authenticate"]
-            if www_auth.startswith("Bearer "):
-                params = _parse_bearer_challenge(www_auth)
-                realm = params.get("realm", "")
-                service = params.get("service", "")
-                scope = params.get("scope", "")
-                token_url = f"{realm}?service={service}&scope={scope}"
-                token_resp = await client.get(token_url, auth=auth)
-                if token_resp.status_code == 200:
-                    data = token_resp.json()
-                    token = data.get("token") or data.get("access_token")
-                    if token:
-                        headers["Authorization"] = f"Bearer {token}"
-                        resp = await client.get(url, headers=headers)
+    if resp.status_code == 401 and "www-authenticate" in resp.headers:
+        www_auth = resp.headers["www-authenticate"]
+        if www_auth.startswith("Bearer "):
+            params = _parse_bearer_challenge(www_auth)
+            realm = params.get("realm", "")
+            service = params.get("service", "")
+            scope = params.get("scope", "")
+            token_url = f"{realm}?service={service}&scope={scope}"
+            token_resp = await client.get(token_url, auth=auth)
+            if token_resp.status_code == 200:
+                data = token_resp.json()
+                token = data.get("token") or data.get("access_token")
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                    resp = await client.get(url, headers=headers)
 
-        return resp.status_code == 200
+    return resp.status_code == 200
 
 
 async def _apply_image_registry_mirror(config: DockerDeploymentConfig) -> None:
