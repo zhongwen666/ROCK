@@ -578,6 +578,10 @@ class RockConfig:
         return result
 
     def __post_init__(self) -> None:
+        from rock.utils.http_pool import HttpPoolManager
+
+        self.http_pool_manager = HttpPoolManager(self.http_pools)
+
         logger.info(f"init RockConfig: {self}")
 
         if self.nacos.endpoint or self.nacos.server_addresses:
@@ -610,7 +614,7 @@ class RockConfig:
 
         # Update configs that are present in nacos_result (field-level merge,
         # then re-run __post_init__ to coerce nested dicts → dataclasses)
-        for key, (config_class, attr_name) in config_map.items():
+        for key, (_, attr_name) in config_map.items():
             if key in nacos_result:
                 existing = getattr(self, attr_name)
                 for field_name, value in nacos_result[key].items():
