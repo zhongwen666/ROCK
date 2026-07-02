@@ -48,6 +48,7 @@ from rock.sandbox.sandbox_meta_store import SandboxMetaStore
 from rock.sandbox.service.sandbox_proxy_service import SandboxProxyService
 from rock.sandbox.service.warmup_service import WarmupService
 from rock.utils import EAGLE_EYE_TRACE_ID, sandbox_id_ctx_var, trace_id_ctx_var
+from rock.utils.http_pool import HttpPoolManager
 from rock.utils.providers import RedisProvider
 from rock.utils.system import is_primary_pod
 from rock.utils.worker import resolve_workers
@@ -98,6 +99,9 @@ async def lifespan(app: FastAPI):
         else env_vars.ROCK_CONFIG
     )
     rock_config = RockConfig.from_env(config_file_path)
+
+    # Initialize HTTP pool manager
+    rock_config.http_pool_manager = HttpPoolManager(rock_config.http_pools)
 
     # Override scheduler config from Nacos if available
     if rock_config.nacos_provider:
@@ -217,6 +221,9 @@ async def lifespan(app: FastAPI):
     if proxy_service_ref is not None:
         await proxy_service_ref.aclose()
         logger.info("proxy httpx clients closed")
+
+    await rock_config.http_pool_manager.aclose_all()
+    logger.info("http pool manager closed")
 
     if db_provider:
         await db_provider.close()

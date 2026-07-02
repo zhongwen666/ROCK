@@ -21,11 +21,14 @@ def _make_manager(mirrors, allowlist=None):
     Default allowlist is ``["*"]`` so callers that don't care about the gate
     keep the legacy "check every image" semantics.
     """
+    pool_manager = MagicMock()
+    pool_manager.get.return_value = MagicMock()
     return SimpleNamespace(
         rock_config=SimpleNamespace(
             image_registry_mirrors=mirrors,
             image_mirror_lookup_allowlist=["*"] if allowlist is None else allowlist,
             nacos_provider=None,
+            http_pool_manager=pool_manager,
         )
     )
 
@@ -34,10 +37,8 @@ def _make_manager(mirrors, allowlist=None):
 def clear_probe_cache():
     """Mirror probe cache is process-local — wipe between tests to avoid cross-test leakage."""
     sandbox_api._MIRROR_PROBE_CACHE.clear()
-    sandbox_api._probe_client = None
     yield
     sandbox_api._MIRROR_PROBE_CACHE.clear()
-    sandbox_api._probe_client = None
 
 
 @pytest.fixture
@@ -513,25 +514,3 @@ def test_image_registry_mirror_field_default_empty():
 
 def test_image_mirror_lookup_allowlist_field_default_empty():
     assert RockConfig.__dataclass_fields__["image_mirror_lookup_allowlist"].default_factory() == []
-
-
-def test_get_probe_client_returns_same_instance():
-    """_get_probe_client must return the same client on repeated calls (pool reuse)."""
-    c1 = sandbox_api._get_probe_client()
-    c2 = sandbox_api._get_probe_client()
-    assert c1 is c2
-
-
-def test_get_probe_client_creates_new_when_closed():
-    """If the cached client is closed, _get_probe_client must create a fresh one."""
-    c1 = sandbox_api._get_probe_client()
-    # Simulate close (sync is fine — httpx.AsyncClient.is_closed flips True)
-    c1._transport._pool._max_connections = 0  # sanity: it's an AsyncClient
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(c1.aclose())
-    assert c1.is_closed
-
-    c2 = sandbox_api._get_probe_client()
-    assert c2 is not c1
-    assert not c2.is_closed

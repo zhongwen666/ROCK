@@ -3,7 +3,6 @@ import re
 import time
 from typing import Annotated, Any
 
-import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 
 from rock.actions import (
@@ -52,17 +51,6 @@ logger = init_logger(__name__)
 
 _MIRROR_PROBE_CACHE: dict[str, tuple[bool, float]] = {}
 _MIRROR_PROBE_TTL_SECONDS = 60.0
-_probe_client: httpx.AsyncClient | None = None  # ponytail: process-lifetime client, reused across probes
-
-
-def _get_probe_client() -> httpx.AsyncClient:
-    global _probe_client
-    if _probe_client is None or _probe_client.is_closed:
-        _probe_client = httpx.AsyncClient(
-            timeout=5,
-            limits=httpx.Limits(max_connections=300, max_keepalive_connections=300),
-        )
-    return _probe_client
 
 
 sandbox_router = APIRouter()
@@ -168,7 +156,7 @@ async def _http_probe_manifest(
     }
     auth = (username, password) if username and password else None
 
-    client = _get_probe_client()
+    client = sandbox_manager.rock_config.http_pool_manager.get("probe")
     resp = await client.get(url, headers=headers, auth=auth)
 
     if resp.status_code == 401 and "www-authenticate" in resp.headers:
