@@ -37,13 +37,16 @@ from rock.admin.proto.request import SandboxWriteFileRequest as WriteFileRequest
 from rock.admin.proto.response import SandboxListResponse, SandboxListStatusResponse, SandboxStatusResponse
 from rock.config import OssConfig, ProxyServiceConfig, RockConfig
 from rock.deployments.constants import Port
-from rock.deployments.status import ServiceStatus
+from rock.deployments.status import PersistedServiceStatus, ServiceStatus
 from rock.common.port_validation import validate_port_forward_port
 from rock.logger import init_logger
 from rock.sandbox.sandbox_meta_store import SandboxMetaStore
 from rock.sandbox.utils.proxy import build_upstream_ws_headers
 from rock.sandbox.utils.timeout import SandboxTimeoutHelper
 from rock.sdk.common.exceptions import BadRequestRockError
+from rock.rocklet import __version__ as swe_version
+from rock.sandbox import __version__ as gateway_version
+from rock.sandbox.sandbox_statemachine import SandboxStateMachine
 from rock.utils import EAGLE_EYE_TRACE_ID, trace_id_ctx_var
 
 logger = init_logger(__name__)
@@ -1013,3 +1016,133 @@ class SandboxProxyService:
             )
         finally:
             await resp.aclose()
+
+    async def _get_current_statemachine(self, sandbox_id: str) -> SandboxStateMachine | None:
+        """Fetch current state from meta store and return a restored SandboxStateMachine, or None.
+
+        Same pattern as SandboxManager._get_current_statemachine.
+        """
+        info = await self._meta_store.get(sandbox_id, check_db=True)
+        if info is None:
+            return None
+        return await SandboxStateMachine.from_state_value(info.get("state"), sandbox_info=info)
+
+    @monitor_sandbox_operation()
+    async def get_status(self, sandbox_id: str, include_all_states: bool = False) -> SandboxStatusResponse:
+        """Get sandbox status via meta_store + rocklet RPC (reuses _rpc_client pool).
+
+        Mirrors SandboxManager.get_status structure but uses rocklet RPCs instead of
+        Ray operator for live status probing. is_alive reflects rocklet responsiveness
+        (can I send traffic?) rather than container-process existence.
+        PENDING→RUNNING transition via sm.send("alive"), timeout refresh via
+        _update_expire_time. No Ray dependency.
+        """
+        sm = await self._get_current_statemachine(sandbox_id)
+        if sm is None:
+            raise BadRequestRockError(f"Sandbox {sandbox_id} not found")
+
+        sandbox_info = sm.sandbox_info or {}
+        host_ip = sandbox_info.get("host_ip")
+
+        is_alive = False
+        operator_sandbox_info = None
+        if host_ip and sm.current_state.value in (State.RUNNING, State.PENDING):
+            remote_status = await self._get_remote_status(sandbox_id, host_ip)
+            is_alive = await self._check_alive_status(sandbox_id, host_ip, remote_status)
+
+            if is_alive:
+                operator_sandbox_info = dict(sandbox_info)
+                operator_sandbox_info["state"] = State.RUNNING
+                operator_sandbox_info.update(remote_status.to_dict())
+
+            if sm.current_state.value == State.PENDING and is_alive:
+                await sm.send(
+                    "alive",
+                    sandbox_id=sandbox_id,
+                    meta_store=self._meta_store,
+                    sandbox_info=operator_sandbox_info,
+                )
+
+            if is_alive and operator_sandbox_info.get("state") in (State.PENDING, State.RUNNING):
+                await self._update_expire_time(sandbox_id)
+
+        if not include_all_states and sm.current_state.value not in (State.PENDING, State.RUNNING):
+            raise BadRequestRockError(f"Sandbox {sandbox_id} not found")
+
+        info = operator_sandbox_info if operator_sandbox_info is not None else sandbox_info
+
+        return SandboxStatusResponse(
+            sandbox_id=sandbox_id,
+            status=info.get("phases"),
+            port_mapping=info.get("port_mapping"),
+            state=info.get("state"),
+            host_name=info.get("host_name"),
+            host_ip=host_ip,
+            is_alive=is_alive,
+            image=info.get("image"),
+            swe_rex_version=swe_version,
+            gateway_version=gateway_version,
+            user_id=info.get("user_id"),
+            experiment_id=info.get("experiment_id"),
+            namespace=info.get("namespace"),
+            cpus=info.get("cpus"),
+            memory=info.get("memory"),
+            disk=info.get("disk"),
+            disk_limit_rootfs=info.get("disk"),
+            start_time=info.get("start_time"),
+            stop_time=info.get("stop_time"),
+            create_time=info.get("create_time"),
+            state_history=sm.sandbox_info.get("state_history", []) if sm.sandbox_info else [],
+        )
+
+    async def _get_remote_status(self, sandbox_id: str, host_ip: str) -> ServiceStatus:
+        """Probe rocklet for ServiceStatus (phases + port_mapping) via shared _rpc_client pool."""
+        service_status_path = PersistedServiceStatus.gen_service_status_path(sandbox_id)
+        headers = self._headers(sandbox_id)
+        rocklet_port = env_vars.ROCK_WORKER_ROCKLET_PORT if env_vars.ROCK_WORKER_ROCKLET_PORT else Port.PROXY
+        base_url = f"http://{host_ip}:{rocklet_port}"
+
+        try:
+            find_resp = await self._rpc_client.post(
+                f"{base_url}/execute",
+                headers=headers,
+                json={"command": ["ls", service_status_path], "sandbox_id": sandbox_id},
+            )
+            find_data = find_resp.json()
+            if find_data.get("exit_code") != 0:
+                return ServiceStatus()
+        except Exception as e:
+            logger.warning(f"Failed to check service status file for {sandbox_id}: {e}")
+            return ServiceStatus()
+
+        try:
+            read_resp = await self._rpc_client.post(
+                f"{base_url}/read_file",
+                headers=headers,
+                json={"path": service_status_path, "sandbox_id": sandbox_id},
+            )
+            read_data = read_resp.json()
+            if read_data.get("content"):
+                try:
+                    return ServiceStatus.from_content(read_data["content"])
+                except Exception:
+                    return ServiceStatus()
+        except Exception as e:
+            logger.warning(f"Failed to read service status for {sandbox_id}: {e}")
+
+        return ServiceStatus()
+
+    async def _check_alive_status(self, sandbox_id: str, host_ip: str, remote_status: ServiceStatus) -> bool:
+        """Probe rocklet /is_alive via shared _rpc_client pool."""
+        try:
+            proxy_port = remote_status.get_mapped_port(Port.PROXY)
+        except KeyError:
+            proxy_port = Port.PROXY.value
+        try:
+            resp = await self._rpc_client.get(
+                f"http://{host_ip}:{proxy_port}/is_alive",
+                headers=self._headers(sandbox_id),
+            )
+            return IsAliveResponse(**resp.json()).is_alive
+        except Exception:
+            return False
