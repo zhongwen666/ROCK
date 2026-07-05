@@ -44,6 +44,12 @@ def _make_rpc_execute_not_found():
     return resp
 
 
+def _make_rpc_execute_success():
+    resp = MagicMock()
+    resp.json.return_value = {"exit_code": 0, "output": ""}
+    return resp
+
+
 def _make_rpc_read_file(content: str):
     resp = MagicMock()
     resp.json.return_value = {"content": content}
@@ -186,7 +192,8 @@ class TestProxyGetStatus:
         not per-request HttpUtils clients."""
         mock_meta_store.get.return_value = _make_meta_info(state=State.RUNNING)
         mock_rpc_client.post.side_effect = [
-            _make_rpc_execute_not_found(),
+            _make_rpc_execute_success(),
+            _make_rpc_read_file(SERVICE_STATUS_JSON),
         ]
         mock_rpc_client.get.return_value = _make_rpc_is_alive(True)
 
