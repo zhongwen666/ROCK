@@ -40,6 +40,8 @@ class SandboxRecord(Base):
     create_time = Column(String(64), nullable=False, default="")
     start_time = Column(String(64), nullable=True)
     stop_time = Column(String(64), nullable=True)
+    archive_time = Column(String(64), nullable=True)
+    delete_time = Column(String(64), nullable=True)
     host_name = Column(String(255), nullable=True)
     auth_token = Column(String(512), nullable=True)
     rock_authorization_encrypted = Column(String(1024), nullable=True)
@@ -55,13 +57,9 @@ class SandboxRecord(Base):
     __table_args__ = (
         Index("ix_sandbox_record_user_id", "user_id"),
         Index("ix_sandbox_record_state", "state"),
-        Index("ix_sandbox_record_namespace", "namespace"),
-        Index("ix_sandbox_record_experiment_id", "experiment_id"),
-        Index("ix_sandbox_record_cluster_name", "cluster_name"),
         Index("ix_sandbox_record_image", "image"),
-        Index("ix_sandbox_record_host_ip", "host_ip"),
-        Index("ix_sandbox_record_host_name", "host_name"),
-        Index("ix_sandbox_record_create_user_gray_flag", "create_user_gray_flag"),
+        Index("ix_sandbox_record_state_stop_time", "state", "stop_time"),
+        Index("ix_sandbox_record_state_start_time", "state", "start_time"),
     )
 
     # Columns allowed as the filter key in list_by().
@@ -70,14 +68,8 @@ class SandboxRecord(Base):
         {
             "sandbox_id",
             "user_id",
-            "image",
-            "experiment_id",
-            "namespace",
-            "cluster_name",
             "state",
-            "host_ip",
-            "host_name",
-            "create_user_gray_flag",
+            "image",
         }
     )
 

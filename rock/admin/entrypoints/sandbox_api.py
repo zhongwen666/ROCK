@@ -3,7 +3,7 @@ import re
 import time
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, UploadFile
 
 from rock.actions import (
     BashObservation,
@@ -343,7 +343,7 @@ async def _apply_accelerator_type_validation(config: DockerDeploymentConfig) -> 
 
     if config.accelerator_type not in allowed:
         raise BadRequestRockError(
-            f"Invalid accelerator_type {config.accelerator_type!r}. " f"Allowed values: {sorted(allowed)}"
+            f"Invalid accelerator_type {config.accelerator_type!r}. Allowed values: {sorted(allowed)}"
         )
 
 
@@ -384,10 +384,18 @@ async def _apply_cpu_overcommit_default(config: DockerDeploymentConfig, rock_aut
     config.limit_cpus = min(2 * config.cpus, config.cpus + headroom)
 
 
+def _apply_auto_clear_default(config: DockerDeploymentConfig, request: SandboxStartRequest) -> None:
+    """Use lifecycle.auto_clear_seconds when SDK did not explicitly set auto_clear_time_minutes."""
+    if "auto_clear_time_minutes" not in request.model_fields_set:
+        default_sec = sandbox_manager.rock_config.lifecycle.auto_transition.auto_clear_seconds
+        config.auto_clear_time_minutes = default_sec // 60
+
+
 @sandbox_router.post("/start")
 @handle_exceptions(error_message="start sandbox failed")
 async def start(request: SandboxStartRequest) -> RockResponse[SandboxStartResponse]:
     config = DockerDeploymentConfig.from_request(request)
+    _apply_auto_clear_default(config, request)
     await _apply_accelerator_type_validation(config)
     await _apply_kata_runtime_switch(config)
     await _apply_kata_disk_size(config)
@@ -406,6 +414,7 @@ async def start_async(
     headers: Annotated[StartHeaders, Depends()],
 ) -> RockResponse[SandboxStartResponse]:
     config = DockerDeploymentConfig.from_request(request)
+    _apply_auto_clear_default(config, request)
     await _apply_accelerator_type_validation(config)
     await _apply_kata_runtime_switch(config)
     await _apply_kata_disk_size(config)
@@ -518,6 +527,21 @@ async def delete(sandbox_id: str = Body(..., embed=True)) -> RockResponse:
     """
     await sandbox_manager.delete(sandbox_id)
     return RockResponse(result=f"{sandbox_id} deleted")
+
+
+@sandbox_router.post("/sandboxes/{sandbox_id}/archive")
+@handle_exceptions(error_message="archive sandbox failed")
+async def archive(
+    sandbox_id: NonBlankStr,
+    rock_authorization: str | None = Header(default=None, alias="X-Key"),
+) -> RockResponse:
+    archive_cfg = sandbox_manager.rock_config.lifecycle.archive
+    if not archive_cfg.enabled:
+        raise BadRequestRockError("archive feature is disabled")
+    if not archive_cfg.is_allowed(rock_authorization):
+        raise BadRequestRockError("archive not allowed for this authorization key")
+    await sandbox_manager.archive_sandbox(sandbox_id)
+    return RockResponse(result=f"{sandbox_id} archiving")
 
 
 @sandbox_router.post("/restart")

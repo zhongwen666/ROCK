@@ -133,6 +133,8 @@ class SandboxMetaStore:
         if result and len(result) > 0:
             return result[0]
         if check_db:
+            # SandboxTable.get already merges the `status` JSONB blob onto the
+            # returned dict, so no further hoisting is needed here.
             result = await self._db.get(sandbox_id)
             if result:
                 return result
@@ -176,6 +178,15 @@ class SandboxMetaStore:
         return await self._db.list_by_in("sandbox_id", sandbox_ids)
 
     @monitor_metastore_operation
-    async def list_by(self, field: str, value: str | int | float | bool) -> list[SandboxInfo]:
+    async def list_by(
+        self, field: str, value: str | int | float | bool, order_by: str | None = None, limit: int | None = None
+    ) -> list[SandboxInfo]:
         """Query sandboxes by *field* == *value* from the DB."""
-        return await self._db.list_by(field, value)
+        return await self._db.list_by(field, value, order_by=order_by, limit=limit)
+
+    @monitor_metastore_operation
+    async def list_by_in(
+        self, field: str, values: list, order_by: str | None = None, limit: int | None = None
+    ) -> list[SandboxInfo]:
+        """Query sandboxes by *field* IN *values* from the DB."""
+        return await self._db.list_by_in(field, values, order_by=order_by, limit=limit)

@@ -5,7 +5,10 @@ import tempfile
 
 import oss2
 
+from rock.logger import init_logger
 from rock.sandbox.archive.abstract import AbstractDirStorage
+
+logger = init_logger(__name__)
 
 
 class OssDirStorage(AbstractDirStorage):
@@ -62,7 +65,12 @@ class OssDirStorage(AbstractDirStorage):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            try:
+                _, stderr = await proc.communicate()
+            except asyncio.CancelledError:
+                proc.kill()
+                await proc.wait()
+                raise
             if proc.returncode != 0:
                 raise RuntimeError(f"tar failed: {stderr.decode()}")
 
@@ -100,7 +108,12 @@ class OssDirStorage(AbstractDirStorage):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            try:
+                _, stderr = await proc.communicate()
+            except asyncio.CancelledError:
+                proc.kill()
+                await proc.wait()
+                raise
             if proc.returncode != 0:
                 raise RuntimeError(f"tar extract failed: {stderr.decode()}")
 
@@ -119,10 +132,14 @@ class OssDirStorage(AbstractDirStorage):
     async def delete(self, key: str) -> bool:
         bucket = self._make_bucket()
         if not await asyncio.to_thread(bucket.object_exists, key):
+            logger.info(f"delete: key {key} not found in {self._bucket}, skipping")
             return False
         await asyncio.to_thread(bucket.delete_object, key)
+        logger.info(f"delete: removed key {key} from {self._bucket}")
         return True
 
     async def exists(self, key: str) -> bool:
         bucket = self._make_bucket()
-        return await asyncio.to_thread(bucket.object_exists, key)
+        found = await asyncio.to_thread(bucket.object_exists, key)
+        logger.info(f"exists: key {key} {'found' if found else 'not found'} in {self._bucket}")
+        return found

@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -8,6 +9,7 @@ import tempfile
 import ray
 from fastapi import UploadFile
 
+from rock import env_vars
 from rock.actions import (
     BashObservation,
     CloseBashSessionResponse,
@@ -26,13 +28,18 @@ from rock.admin.proto.request import SandboxCreateBashSessionRequest as CreateBa
 from rock.admin.proto.request import SandboxReadFileRequest as ReadFileRequest
 from rock.admin.proto.request import SandboxWriteFileRequest as WriteFileRequest
 from rock.common.constants import StopReason
+from rock.config import ArchiveDirStorageConfig
 from rock.deployments.abstract import AbstractDeployment
 from rock.deployments.config import DeploymentConfig
 from rock.deployments.constants import Status
 from rock.deployments.docker import DockerDeployment
-from rock.deployments.status import ServiceStatus
+from rock.deployments.status import PersistedServiceStatus, PhaseStatus, ServiceStatus
 from rock.logger import init_logger
+from rock.sandbox.archive.abstract import AbstractDirStorage
+from rock.sandbox.archive.constants import ArchiveKeys
+from rock.sandbox.archive.registry_v2 import DockerRegistryV2ImageStorage
 from rock.sandbox.gem_actor import GemActor
+from rock.utils.format import parse_size_to_bytes
 
 logger = init_logger(__name__)
 
@@ -44,6 +51,7 @@ class SandboxActor(GemActor):
     _clean_container_background_script = "rock/admin/scripts/clean_container_background.sh"
     _clean_container_background_process = None
     _metrics_monitor = None
+    _archive_status = None
     _role = "test"
     _env = "dev"
     _user_id = "default"
@@ -126,6 +134,19 @@ class SandboxActor(GemActor):
                 process.kill()
                 await process.wait()
             raise subprocess.TimeoutExpired(args, timeout)
+        except asyncio.CancelledError:
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
+
+    async def _get_image_size(self, image_tag: str) -> int:
+        result = await self._run_shell_command("docker", "image", "inspect", "--format={{.Size}}", image_tag)
+        return int(result.stdout.decode().strip())
+
+    async def _get_dir_size(self, dir_path: str) -> int:
+        result = await self._run_shell_command("du", "-sb", dir_path)
+        return int(result.stdout.decode().split()[0])
 
     async def start(self):
         try:
@@ -151,7 +172,13 @@ class SandboxActor(GemActor):
             self.log_lifecycle_summary(reason)
 
     async def restart(self):
-        """Restart an existing stopped container using docker start."""
+        """Restart an existing stopped container using docker start.
+
+        On success the actor stays alive as the long-lived runtime for the
+        RUNNING sandbox.  On any failure the actor exits so a stale detached
+        actor doesn't linger — the manager-side reconcile loop will observe
+        the sandbox stuck in PENDING and stop it back to STOPPED.
+        """
         logger.info(f"[{self._config.container_name}] start to restart")
         try:
             await self._deployment.restart()
@@ -166,10 +193,8 @@ class SandboxActor(GemActor):
             await self._setup_monitor()
             logger.info(f"[{self._config.container_name}] actor restarted")
         except Exception as e:
-            logger.error(
-                f"[{self._config.container_name}] Error occurred while restarting container: {e}", exc_info=True
-            )
-            raise
+            logger.exception(f"[{self._config.container_name}] restart failed: {e}")
+            ray.actor.exit_actor()
 
     async def delete(self):
         container_name = self._config.container_name if self._config else None
@@ -316,3 +341,181 @@ class SandboxActor(GemActor):
                 "disk": self._config.disk,
             }
         return {}
+
+    async def archive(
+        self,
+        dir_storage_config: dict,
+        image_storage_config: dict,
+        archive_params: dict | None = None,
+    ) -> None:
+        """Fire-and-forget archive: commit+push image, upload logs, then self-exit."""
+        archive_params = archive_params or {}
+        timeout = archive_params.get("timeout_seconds", 1800)
+        try:
+            await asyncio.wait_for(
+                self._do_archive(dir_storage_config, image_storage_config, archive_params),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[{self._config.container_name}] archive timed out after {timeout}s")
+            if self._archive_status:
+                self._archive_status.update_status("image_archive", Status.TIMEOUT, f"timeout after {timeout}s")
+        except Exception as e:
+            logger.exception(f"[{self._config.container_name}] archive failed: {e}")
+            if self._archive_status:
+                self._archive_status.update_status("image_archive", Status.FAILED, str(e)[:200])
+        finally:
+            ray.actor.exit_actor()
+
+    async def _do_archive(
+        self,
+        dir_storage_config: dict,
+        image_storage_config: dict,
+        archive_params: dict,
+    ) -> None:
+        sandbox_id = self._config.container_name
+        dir_storage = AbstractDirStorage.from_config(ArchiveDirStorageConfig(**dir_storage_config))
+        image_storage = DockerRegistryV2ImageStorage(**image_storage_config)
+        prefix = archive_params.get("archive_prefix", "rock-archives/")
+        registry_ns = archive_params.get("registry_namespace", "sandbox_archive")
+
+        self._archive_status = PersistedServiceStatus(
+            phases={"image_archive": PhaseStatus(), "log_archive": PhaseStatus()}
+        )
+        self._archive_status.set_sandbox_id(sandbox_id)
+        self._archive_status.update_status("image_archive", Status.RUNNING, "committing container")
+
+        local_tag = f"archive-staging-{sandbox_id}:latest"
+        await self._run_shell_command("docker", "commit", sandbox_id, local_tag)
+
+        log_root = env_vars.ROCK_LOGGING_PATH
+        log_dir = f"{log_root}/{sandbox_id}" if log_root else ""
+        has_log_dir = bool(log_dir) and os.path.isdir(log_dir)
+
+        # Pre-flight size checks
+        max_image = archive_params.get("max_image_push_size", "")
+        if max_image:
+            image_size = await self._get_image_size(local_tag)
+            max_bytes = parse_size_to_bytes(max_image)
+            if image_size > max_bytes:
+                await self._run_shell_command("docker", "rmi", local_tag, check=False)
+                raise RuntimeError(
+                    f"[{sandbox_id}] image size {image_size} bytes exceeds limit {max_image} ({max_bytes} bytes)"
+                )
+
+        max_dir = archive_params.get("max_dir_upload_size", "")
+        if max_dir and has_log_dir:
+            dir_size = await self._get_dir_size(log_dir)
+            max_bytes = parse_size_to_bytes(max_dir)
+            if dir_size > max_bytes:
+                await self._run_shell_command("docker", "rmi", local_tag, check=False)
+                raise RuntimeError(
+                    f"[{sandbox_id}] log dir size {dir_size} bytes exceeds limit {max_dir} ({max_bytes} bytes)"
+                )
+
+        # Upload logs (dir first, then image)
+        dir_uploaded = False
+        if has_log_dir:
+            key = ArchiveKeys.dir_key(sandbox_id, prefix)
+            self._archive_status.update_status("log_archive", Status.RUNNING, "uploading logs")
+            try:
+                await dir_storage.upload_dir(log_dir, key)
+                dir_uploaded = True
+                self._archive_status.update_status("log_archive", Status.SUCCESS, "logs uploaded")
+            except Exception:
+                self._archive_status.update_status("log_archive", Status.FAILED, "upload failed")
+                await self._run_shell_command("docker", "rmi", local_tag, check=False)
+                raise
+            shutil.rmtree(log_dir, ignore_errors=True)
+        else:
+            self._archive_status.update_status("log_archive", Status.SUCCESS, "skipped")
+
+        ref = ArchiveKeys.image_ref(sandbox_id, image_storage.registry_url, registry_ns)
+        # Delete existing tag before push — some registries (ACR) reject overwrites.
+        # Swallow the error so a benign 404 (tag never existed) doesn't abort the archive,
+        # but log at warning so a real auth/network failure is not silently masked.
+        try:
+            await image_storage.delete(ref)
+        except Exception as e:
+            logger.warning(f"[{sandbox_id}] pre-push delete of {ref} failed (may be first archive): {e}")
+        self._archive_status.update_status("image_archive", Status.RUNNING, "pushing to registry")
+        try:
+            await image_storage.push_from_local(local_tag, ref)
+        except Exception:
+            self._archive_status.update_status("image_archive", Status.FAILED, "push failed")
+            await self._run_shell_command("docker", "rmi", local_tag, check=False)
+            if dir_uploaded:
+                try:
+                    await dir_storage.delete(key)
+                except Exception:
+                    logger.warning(f"[{sandbox_id}] failed to cleanup dir {key} after image push failure")
+            raise
+        await self._run_shell_command("docker", "rmi", local_tag, check=False)
+        self._archive_status.update_status("image_archive", Status.SUCCESS, "image archived")
+
+        await self._deployment.delete()
+        logger.info(f"[{sandbox_id}] archive complete")
+
+    async def restore_and_start(
+        self,
+        dir_storage_config: dict,
+        image_storage_config: dict,
+        archive_params: dict | None = None,
+    ) -> None:
+        """Full restore: pull image + download logs + docker start + arm watchdog.
+
+        On success the actor stays alive as the long-lived runtime for the
+        RUNNING sandbox.  On any failure (timeout or exception) the actor
+        exits so a stale detached actor doesn't linger — the manager-side
+        reconcile loop will observe the missing actor and move the sandbox
+        back to ARCHIVED via ``restore_failed``.
+        """
+        archive_params = archive_params or {}
+        timeout = archive_params.get("timeout_seconds", 1800)
+        try:
+            await asyncio.wait_for(
+                self._do_restore_and_start(dir_storage_config, image_storage_config, archive_params),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[{self._config.container_name}] restore timed out after {timeout}s")
+            ray.actor.exit_actor()
+        except Exception as e:
+            logger.exception(f"[{self._config.container_name}] restore failed: {e}")
+            ray.actor.exit_actor()
+
+    async def _do_restore_and_start(
+        self,
+        dir_storage_config: dict,
+        image_storage_config: dict,
+        archive_params: dict,
+    ) -> None:
+        sandbox_id = self._config.container_name
+        dir_storage = AbstractDirStorage.from_config(ArchiveDirStorageConfig(**dir_storage_config))
+        image_storage = DockerRegistryV2ImageStorage(**image_storage_config)
+        prefix = archive_params.get("archive_prefix", "rock-archives/")
+        registry_ns = archive_params.get("registry_namespace", "sandbox_archive")
+
+        ref = ArchiveKeys.image_ref(sandbox_id, image_storage.registry_url, registry_ns)
+        await image_storage.pull_to_local(ref)
+
+        log_root = env_vars.ROCK_LOGGING_PATH
+        if log_root:
+            key = ArchiveKeys.dir_key(sandbox_id, prefix)
+            target_dir = f"{log_root}/{sandbox_id}"
+            if await dir_storage.exists(key):
+                try:
+                    if os.path.exists(target_dir):
+                        shutil.rmtree(target_dir)
+                    await dir_storage.download_to_dir(key, target_dir)
+                except Exception as e:
+                    logger.warning(f"[{sandbox_id}] log restore failed, continuing without logs: {e}")
+            else:
+                logger.warning(f"[{sandbox_id}] archived log key {key} not found in OSS, skipping log restore")
+        else:
+            logger.info(f"[{sandbox_id}] ROCK_LOGGING_PATH not set, skipping log restore")
+
+        await self._deployment.restart_from_image(ref)
+        self._clean_container_background()
+        await self._setup_monitor()
+        logger.info(f"[{sandbox_id}] restore_and_start complete")

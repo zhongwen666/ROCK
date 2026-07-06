@@ -1,4 +1,10 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rock.config import ArchiveDirStorageConfig, ArchiveRegistryConfig
 
 
 class AbstractDirStorage(ABC):
@@ -7,6 +13,23 @@ class AbstractDirStorage(ABC):
     Caller passes a local directory path; the storage implementation
     decides compression format and upload strategy internally.
     """
+
+    @classmethod
+    def from_config(cls, cfg: ArchiveDirStorageConfig) -> AbstractDirStorage:
+        kwargs = dict(
+            endpoint=cfg.endpoint,
+            bucket=cfg.bucket,
+            access_key_id=cfg.access_key_id,
+            access_key_secret=cfg.access_key_secret,
+            region=cfg.region,
+        )
+        if cfg.type == "s3":
+            from rock.sandbox.archive.s3_storage import S3DirStorage
+
+            return S3DirStorage(**kwargs)
+        from rock.sandbox.archive.oss_storage import OssDirStorage
+
+        return OssDirStorage(**kwargs)
 
     @abstractmethod
     async def upload_dir(self, local_dir: str, key: str) -> None:
@@ -34,6 +57,16 @@ class AbstractImageStorage(ABC):
     push_from_local / pull_to_local must run on the node owning the image
     (node-local docker daemon). exists / delete are registry HTTP API calls.
     """
+
+    @classmethod
+    def from_config(cls, cfg: ArchiveRegistryConfig) -> AbstractImageStorage:
+        from rock.sandbox.archive.registry_v2 import DockerRegistryV2ImageStorage
+
+        return DockerRegistryV2ImageStorage(
+            registry_url=cfg.registry_url,
+            username=cfg.username,
+            password=cfg.password,
+        )
 
     @property
     @abstractmethod

@@ -958,13 +958,6 @@ class DockerDeployment(AbstractDeployment):
         is in a stopped/exited state. A nonexistent container surfaces via
         `docker start` failing — see is_alive()'s poll-based detection.
         """
-        # TODO: once a sandbox delete API exists, move _cleanup_kata_disk() there;
-        # until then kata restart is blocked because _stop() deletes the .img file.
-        if self._config.use_kata_runtime:
-            raise NotImplementedError(
-                f"Restart is not supported for kata runtime containers (container={self._container_name}). "
-            )
-
         executor = get_executor()
         loop = asyncio.get_running_loop()
 
@@ -1013,14 +1006,120 @@ class DockerDeployment(AbstractDeployment):
 
         logger.info(f"Container {self._container_name} restarted successfully")
 
+    async def restart_from_image(self, image_ref: str):
+        """Recreate a container from a committed archive image.
+
+        Used by the archive-restore flow: the original container was deleted
+        after archiving; this method creates a fresh container from the
+        archived image with the same config (name, memory, cpus, volumes).
+        """
+        logger.info(f"Recreating container {self._container_name} from {image_ref}")
+
+        executor = get_executor()
+        loop = asyncio.get_running_loop()
+
+        if self._config.disk is not None and not DockerUtil.detect_storage_opt_support():
+            logger.warning(
+                f"[{self._container_name}] --storage-opt not supported on this worker "
+                f"(requires overlay2 + xfs + prjquota), ignoring disk={self._config.disk}"
+            )
+            self._effective_disk = None
+
+        # Remove any leftover container with the same name (may exist if the
+        # archive actor was killed before it could `docker rm`).
+        DockerUtil.remove_container_force(self._container_name)
+
+        self._service_status.set_sandbox_id(self._container_name)
+        await self.do_port_mapping()
+
+        # Build docker create command from archived image.
+        env_arg = ["-e", f"ROCK_TIME_ZONE={env_vars.ROCK_TIME_ZONE}"]
+        volume_args = self._prepare_volume_mounts()
+        if env_vars.ROCK_LOGGING_PATH:
+            log_file_path = f"{env_vars.ROCK_LOGGING_PATH}/{self._container_name}"
+            os.makedirs(log_file_path, exist_ok=True)
+            os.chmod(log_file_path, 0o777)
+            volume_args.extend(["-v", f"{log_file_path}:{env_vars.ROCK_LOGGING_PATH}"])
+            env_arg.extend(
+                [
+                    "-e",
+                    f"ROCK_LOGGING_PATH={env_vars.ROCK_LOGGING_PATH}",
+                    "-e",
+                    f"ROCK_LOGGING_LEVEL={env_vars.ROCK_LOGGING_LEVEL}",
+                ]
+            )
+        volume_args.extend(self._prepare_timezone_mount())
+
+        if self._config.use_kata_runtime:
+            self._prepare_kata_disk()
+            disk_path = self._get_kata_disk_image_path()
+            volume_args.extend(["-v", f"{disk_path}:/docker-disk.img"])
+
+        runtime_args = self._build_runtime_args()
+
+        cmds = [
+            "docker",
+            "create",
+            "--entrypoint",
+            "",
+            *env_arg,
+            *volume_args,
+            *runtime_args,
+            "-p",
+            f"{self._config.port}:{Port.PROXY}",
+            "-p",
+            f"{self._service_status.get_mapped_port(Port.SERVER)}:8080",
+            "-p",
+            f"{self._service_status.get_mapped_port(Port.SSH)}:22",
+            *self._memory(),
+            *self._cpus(),
+            *self._storage_opts(),
+            *self._config.docker_args,
+            "--name",
+            self._container_name,
+            image_ref,
+            *self._get_rocklet_start_cmd(),
+        ]
+
+        cmd_str = shlex.join(cmds)
+        logger.info(f"Recreating container {self._container_name} from archived image {image_ref}")
+        logger.info(f"Command: {cmd_str!r}")
+
+        await loop.run_in_executor(executor, self._docker_create, cmds)
+        try:
+            self._container_process = await loop.run_in_executor(executor, self._docker_start)
+        except Exception:
+            DockerUtil.remove_container_force(self._container_name)
+            raise
+
+        if self._config.port is None:
+            self._config.port = self._service_status.port_mapping.get(Port.PROXY)
+        if self._config.port is None:
+            raise Exception(f"Cannot determine rocklet port for container {self._container_name}")
+
+        logger.info(f"Starting runtime at {self._config.port}")
+        self._runtime = RemoteSandboxRuntime.from_config(
+            RemoteSandboxRuntimeConfig(port=self._config.port, timeout=self._runtime_timeout)
+        )
+        self._runtime.set_executor(executor)
+
+        with StageTimer("startup_timing", f"[{self._container_name}] Wait until alive", logger):
+            await self._wait_until_alive(timeout=self._config.startup_timeout)
+
+        if self._config.enable_auto_clear:
+            self._check_stop_task = asyncio.create_task(self._check_stop())
+
+        logger.info(f"Container {self._container_name} recreated from {image_ref} successfully")
+
     async def delete(self) -> None:
-        """Remove the container via ``docker rm -f``.
+        """Remove the container via ``docker rm -f`` and clean up kata disk.
 
         Idempotent — a container that doesn't exist counts as success because
         nothing remains to clean up. The actor was previously stopped (or
         freshly created without start), so there is no
         ``self._container_process`` / ``self._runtime`` to unwind here.
-        Quota / log cleanup already ran during ``_stop`` and is not repeated.
+        Kata disk cleanup lives here (not in _stop) so that restart can
+        reuse the disk image after stop.
         """
         container_name = self._container_name or (self._config.container_name if self._config else None)
         if not container_name:
@@ -1030,6 +1129,7 @@ class DockerDeployment(AbstractDeployment):
         executor = get_executor()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(executor, DockerUtil.remove_container_force, container_name)
+        self._cleanup_kata_disk()
 
     def _get_rocklet_port_from_inspect(self) -> int | None:
         """Read the host-side port mapped to the rocklet (container port 22555) from docker inspect."""
@@ -1092,7 +1192,6 @@ class DockerDeployment(AbstractDeployment):
 
             self._container_process = None
             self._cleanup_rootfs_xfs_quota()
-            self._cleanup_kata_disk()
             self._container_name = None
 
         if self._check_stop_task is not None:

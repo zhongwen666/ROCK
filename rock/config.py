@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -176,10 +177,11 @@ class ArchiveDirStorageConfig:
     access_key_id: str = ""
     access_key_secret: str = ""
     region: str = ""
+    prefix: str = "rock-archives/"
 
 
 @dataclass
-class ArchiveAcrConfig:
+class ArchiveRegistryConfig:
     registry_url: str = ""
     username: str = ""
     password: str = ""
@@ -188,22 +190,42 @@ class ArchiveAcrConfig:
 
 @dataclass
 class ArchiveConfig:
+    enabled: bool = False
+    allowed_keys: list[str] | None = None
     dir_storage: ArchiveDirStorageConfig = field(default_factory=ArchiveDirStorageConfig)
-    acr: ArchiveAcrConfig = field(default_factory=ArchiveAcrConfig)
-    scan_interval_sec: int = 30
-    timeout_sec: int = 1800
-    max_retries: int = 3
-    prefix: str = "rock-archives/"
+    registry: ArchiveRegistryConfig = field(default_factory=ArchiveRegistryConfig)
+    max_image_push_size: str = "16g"
+    max_dir_upload_size: str = "16g"
+    archive_timeout_seconds: int = 1800
+    restore_timeout_seconds: int = 1800
+
+    def is_allowed(self, rock_authorization: str | None) -> bool:
+        """Check if the caller is allowed to use archive. None = open to all."""
+        if self.allowed_keys is None:
+            return True
+        if not isinstance(self.allowed_keys, list):
+            return False
+        return rock_authorization in self.allowed_keys
 
     def __post_init__(self):
         if isinstance(self.dir_storage, dict):
             self.dir_storage = ArchiveDirStorageConfig(**self.dir_storage)
-        if isinstance(self.acr, dict):
-            self.acr = ArchiveAcrConfig(**self.acr)
+        if isinstance(self.registry, dict):
+            self.registry = ArchiveRegistryConfig(**self.registry)
+
+
+@dataclass
+class AutoTransitionConfig:
+    interval_seconds: int = 180
+    auto_archive_seconds: int = 0
+    auto_delete_seconds: int = 0
+    auto_clear_seconds: int = 1800
 
 
 @dataclass
 class SandboxLifecycleConfig:
+    reconcile_interval_seconds: int = 30
+    auto_transition: AutoTransitionConfig = field(default_factory=AutoTransitionConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
 
     default_startup_timeout_seconds: float = 600
@@ -218,6 +240,8 @@ class SandboxLifecycleConfig:
     def __post_init__(self):
         if isinstance(self.archive, dict):
             self.archive = ArchiveConfig(**self.archive)
+        if isinstance(self.auto_transition, dict):
+            self.auto_transition = AutoTransitionConfig(**self.auto_transition)
 
 
 @dataclass
@@ -430,6 +454,24 @@ def _resolve_k8s_template_includes(k8s_dict: dict, base_dir: Path) -> None:
     k8s_dict["templates"] = merged
 
 
+def _merge_dataclass(target, overrides: dict):
+    """Recursively merge *overrides* into a dataclass instance.
+
+    For nested dataclass fields, only the keys present in *overrides* are
+    updated (deep merge) instead of replacing the entire sub-object.
+    """
+    for key, value in overrides.items():
+        if not hasattr(target, key):
+            continue
+        current = getattr(target, key)
+        if dataclasses.is_dataclass(current) and isinstance(value, dict):
+            _merge_dataclass(current, value)
+        else:
+            setattr(target, key, value)
+    if hasattr(target, "__post_init__"):
+        target.__post_init__()
+
+
 @dataclass
 class RockConfig:
     ray: RayConfig = field(default_factory=RayConfig)
@@ -616,16 +658,9 @@ class RockConfig:
             "lifecycle": (SandboxLifecycleConfig, "lifecycle"),
         }
 
-        # Update configs that are present in nacos_result (field-level merge,
-        # then re-run __post_init__ to coerce nested dicts → dataclasses)
-        for key, (_, attr_name) in config_map.items():
+        for key, (config_class, attr_name) in config_map.items():
             if key in nacos_result:
-                existing = getattr(self, attr_name)
-                for field_name, value in nacos_result[key].items():
-                    if hasattr(existing, field_name):
-                        setattr(existing, field_name, value)
-                if hasattr(existing, "__post_init__"):
-                    existing.__post_init__()
+                _merge_dataclass(getattr(self, attr_name), nacos_result[key])
 
         if "image_registry_mirrors" in nacos_result:
             raw_mirrors = nacos_result["image_registry_mirrors"] or []
@@ -643,4 +678,5 @@ class RockConfig:
             f", image_registry_mirrors={self.image_registry_mirrors}"
             f", image_mirror_lookup_allowlist={self.image_mirror_lookup_allowlist}"
             f", instance_registry_mirrors={self.runtime.instance_registry_mirrors}"
+            f", lifecycle={self.lifecycle}"
         )
