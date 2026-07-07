@@ -47,6 +47,7 @@ from rock.sdk.sandbox.agent.rock_agent import RockAgent
 from rock.sdk.sandbox.config import SandboxConfig, SandboxGroupConfig
 from rock.sdk.sandbox.deploy import Deploy
 from rock.sdk.sandbox.file_system import FileSystem, LinuxFileSystem
+from rock.sdk.sandbox.gui import Gui
 from rock.sdk.sandbox.model_service.base import ModelService
 from rock.sdk.sandbox.network import Network
 from rock.sdk.sandbox.oss_client import OssClient
@@ -80,6 +81,7 @@ class Sandbox(AbstractSandbox):
     fs: FileSystem | None = None
     runtime_envs: dict[RuntimeEnvId, RuntimeEnv]
     deploy: Deploy | None = None
+    gui: Gui | None = None
 
     def __init__(self, config: SandboxConfig):
         self._pod_name = None
@@ -95,6 +97,7 @@ class Sandbox(AbstractSandbox):
         self.fs = LinuxFileSystem(self)
         self.runtime_envs = {}
         self.deploy = Deploy(self)
+        self.gui = Gui(self)
         self.agent = RockAgent(self)
         self._oss = OssClient(self)
 

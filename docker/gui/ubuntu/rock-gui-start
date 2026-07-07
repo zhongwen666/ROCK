@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DISPLAY_ID="${ROCK_GUI_DISPLAY:-:99}"
+WIDTH="${ROCK_GUI_WIDTH:-1280}"
+HEIGHT="${ROCK_GUI_HEIGHT:-720}"
+DEPTH="${ROCK_GUI_DEPTH:-24}"
+ENABLE_NOVNC="${ROCK_GUI_ENABLE_NOVNC:-true}"
+NOVNC_PORT="${ROCK_GUI_NOVNC_PORT:-8006}"
+LOG_DIR="${ROCK_GUI_LOG_DIR:-/tmp/rock-gui}"
+XAUTHORITY="${XAUTHORITY:-${HOME:-/root}/.Xauthority}"
+
+mkdir -p "${LOG_DIR}"
+export DISPLAY="${DISPLAY_ID}"
+export XAUTHORITY
+mkdir -p "$(dirname "${XAUTHORITY}")"
+touch "${XAUTHORITY}"
+
+if ! pgrep -f "Xvfb ${DISPLAY_ID}" >/dev/null 2>&1; then
+  Xvfb "${DISPLAY_ID}" -ac -screen 0 "${WIDTH}x${HEIGHT}x${DEPTH}" \
+    >"${LOG_DIR}/xvfb.log" 2>&1 &
+fi
+
+for _ in $(seq 1 50); do
+  if xdpyinfo -display "${DISPLAY_ID}" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+
+if ! xdpyinfo -display "${DISPLAY_ID}" >/dev/null 2>&1; then
+  echo "Xvfb failed to become ready on ${DISPLAY_ID}" >&2
+  exit 1
+fi
+
+if ! pgrep -f "openbox" >/dev/null 2>&1; then
+  openbox >"${LOG_DIR}/openbox.log" 2>&1 &
+fi
+
+case "${ENABLE_NOVNC}" in
+  true|TRUE|1|yes|YES)
+    if ! pgrep -f "x11vnc .*${DISPLAY_ID}" >/dev/null 2>&1; then
+      x11vnc -display "${DISPLAY_ID}" -forever -shared -nopw \
+        >"${LOG_DIR}/x11vnc.log" 2>&1 &
+    fi
+    if ! pgrep -f "websockify .*${NOVNC_PORT}" >/dev/null 2>&1; then
+      websockify --web=/usr/share/novnc/ "0.0.0.0:${NOVNC_PORT}" localhost:5900 \
+        >"${LOG_DIR}/novnc.log" 2>&1 &
+    fi
+    ;;
+esac
+
+python3 - <<'PY'
+import json
+import os
+import pyautogui
+
+size = pyautogui.size()
+print(json.dumps({
+    "display": os.environ.get("DISPLAY"),
+    "width": size.width,
+    "height": size.height,
+}))
+PY
