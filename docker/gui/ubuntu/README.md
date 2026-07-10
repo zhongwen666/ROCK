@@ -1,8 +1,8 @@
 # ROCK Ubuntu GUI Image
 
-This image provides the Ubuntu-side dependencies for ROCK SDK GUI automation.
-It is based on `ubuntu:22.04` and installs Python, pip, and GUI automation
-dependencies during the image build.
+This image provides an Ubuntu XFCE desktop and the dependencies for ROCK SDK
+GUI automation. It is based on `ubuntu:22.04` and installs Python, pip, XFCE,
+noVNC, and GUI automation dependencies during the image build.
 It does not define or rely on Docker `ENTRYPOINT`; ROCK may override container
 entrypoints during sandbox startup.
 
@@ -18,6 +18,9 @@ docker build -t rock-ubuntu-gui:22.04 docker/gui/ubuntu
 rock-gui-start
 ```
 
+`rock-gui-start` starts `Xvfb`, an XFCE desktop session, and optional noVNC.
+The image does not rely on Docker `ENTRYPOINT`.
+
 Defaults:
 
 - `DISPLAY=:99`
@@ -26,6 +29,7 @@ Defaults:
 - `ROCK_GUI_DEPTH=24`
 - `ROCK_GUI_ENABLE_NOVNC=true`
 - `ROCK_GUI_NOVNC_PORT=8006`
+- Desktop: XFCE
 
 Disable noVNC:
 

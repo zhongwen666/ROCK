@@ -9,12 +9,17 @@ ENABLE_NOVNC="${ROCK_GUI_ENABLE_NOVNC:-true}"
 NOVNC_PORT="${ROCK_GUI_NOVNC_PORT:-8006}"
 LOG_DIR="${ROCK_GUI_LOG_DIR:-/tmp/rock-gui}"
 XAUTHORITY="${XAUTHORITY:-${HOME:-/root}/.Xauthority}"
+XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-${USER:-root}}"
 
 mkdir -p "${LOG_DIR}"
 export DISPLAY="${DISPLAY_ID}"
 export XAUTHORITY
+export XDG_RUNTIME_DIR
+export NO_AT_BRIDGE=1
 mkdir -p "$(dirname "${XAUTHORITY}")"
 touch "${XAUTHORITY}"
+mkdir -p "${XDG_RUNTIME_DIR}"
+chmod 700 "${XDG_RUNTIME_DIR}"
 
 if ! pgrep -f "Xvfb ${DISPLAY_ID}" >/dev/null 2>&1; then
   Xvfb "${DISPLAY_ID}" -ac -screen 0 "${WIDTH}x${HEIGHT}x${DEPTH}" \
@@ -33,9 +38,16 @@ if ! xdpyinfo -display "${DISPLAY_ID}" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! pgrep -f "openbox" >/dev/null 2>&1; then
-  openbox >"${LOG_DIR}/openbox.log" 2>&1 &
+if ! pgrep -f "xfce4-session|xfce4-panel|xfdesktop" >/dev/null 2>&1; then
+  dbus-launch --exit-with-session startxfce4 >"${LOG_DIR}/xfce.log" 2>&1 &
 fi
+
+for _ in $(seq 1 50); do
+  if pgrep -f "xfce4-panel|xfdesktop" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
 
 case "${ENABLE_NOVNC}" in
   true|TRUE|1|yes|YES)
@@ -58,6 +70,7 @@ import pyautogui
 size = pyautogui.size()
 print(json.dumps({
     "display": os.environ.get("DISPLAY"),
+    "desktop": "xfce",
     "width": size.width,
     "height": size.height,
 }))

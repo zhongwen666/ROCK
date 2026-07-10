@@ -11,9 +11,9 @@ ENV DISPLAY=:99
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    dbus-x11 \
     fonts-dejavu \
     fonts-noto-cjk \
-    openbox \
     procps \
     python3 \
     python3-dev \
@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11vnc \
     xauth \
     xdotool \
+    xfce4 \
+    xfce4-terminal \
     xvfb \
     novnc \
     && python3 -m pip install --no-cache-dir pyautogui pillow \

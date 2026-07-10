@@ -17,7 +17,9 @@ def test_gui_dockerfile_installs_required_dependencies():
     content = (IMAGE_DIR / "Dockerfile").read_text()
     for package in [
         "xvfb",
-        "openbox",
+        "dbus-x11",
+        "xfce4",
+        "xfce4-terminal",
         "x11vnc",
         "websockify",
         "novnc",
@@ -47,7 +49,8 @@ def test_gui_start_script_is_idempotent_and_uses_expected_defaults():
     assert "8006" in content
     assert "pgrep" in content
     assert "Xvfb" in content
-    assert "openbox" in content
+    assert "startxfce4" in content
+    assert '"desktop": "xfce"' in content
 
 
 def test_gui_start_script_prepares_xauthority_for_pyautogui():
