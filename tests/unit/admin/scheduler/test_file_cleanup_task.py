@@ -105,7 +105,27 @@ class TestFileCleanupTaskBlacklist:
 
 
 # --------------------------------------------------------------------------- #
-# Section C: _build_cleanup_command — uses -delete (the perf change)
+# Section C: running container names — parsing and safe exclusion paths
+# --------------------------------------------------------------------------- #
+
+
+class TestRunningContainerNames:
+    def test_parse_running_container_names(self):
+        assert FileCleanupTask._parse_running_container_names("worker-a\nworker_b\nworker-a\n\n") == [
+            "worker-a",
+            "worker_b",
+        ]
+
+    def test_parse_running_container_names_rejects_unsafe_output(self):
+        with pytest.raises(ValueError, match="Invalid Docker container name"):
+            FileCleanupTask._parse_running_container_names("worker-a; rm -rf /\n")
+
+    def test_parse_running_container_names_handles_empty_output(self):
+        assert FileCleanupTask._parse_running_container_names(" \n\n") == []
+
+
+# --------------------------------------------------------------------------- #
+# Section D: _build_cleanup_command — uses -delete (the perf change)
 # --------------------------------------------------------------------------- #
 
 
@@ -164,6 +184,29 @@ class TestBuildCleanupCommand:
         cmd = task._build_cleanup_command(dir_cfg)
         assert "-prune" not in cmd
         assert '-not -path "*/important.log"' in cmd
+
+    def test_command_merges_runtime_exclude_dirs_without_mutating_config(self):
+        dir_cfg = TargetDirConfig(
+            path="/data/logs",
+            exclude_dirs=["manual_keep"],
+            exclude_files=["docuum.log"],
+        )
+        task = self._new_task(target_dirs=[dir_cfg])
+
+        cmd = task._build_cleanup_command(
+            dir_cfg,
+            extra_exclude_dirs=["/data/logs/worker-a"],
+        )
+
+        file_find = [part for part in cmd.split(";") if "-type f" in part][0]
+        empty_dir_find = [part for part in cmd.split(";") if "-type d -empty" in part][0]
+        for find_command in (file_find, empty_dir_find):
+            assert '-not -path "/data/logs/worker-a"' in find_command
+            assert '-not -path "/data/logs/worker-a/*"' in find_command
+            assert '-not -path "*/manual_keep"' in find_command
+            assert '-not -path "*/manual_keep/*"' in find_command
+        assert '-not -path "*/docuum.log"' in file_find
+        assert dir_cfg.exclude_dirs == ["manual_keep"]
 
     def test_command_no_prune_anywhere(self):
         """Since both -delete (Step 1) and -depth (Step 2) disable -prune,
@@ -295,8 +338,7 @@ class TestBuildCleanupCommand:
                 task = self._new_task(target_dirs=[cfg], max_age_mins=max_age)
                 cmd = task._build_cleanup_command(cfg)
                 assert "-empty -delete" not in cmd, (
-                    f"unguarded empty-dir delete leaked into command for "
-                    f"max_age_mins={max_age}, dir_cfg={cfg}: {cmd}"
+                    f"unguarded empty-dir delete leaked into command for max_age_mins={max_age}, dir_cfg={cfg}: {cmd}"
                 )
 
 
@@ -379,24 +421,101 @@ class TestRunAction:
 
         runtime = AsyncMock()
         runtime._config = type("C", (), {"host": "10.0.0.1"})()
-        runtime.execute = AsyncMock(return_value=_FakeExecResult())
+        runtime.execute = AsyncMock(
+            side_effect=[
+                _FakeExecResult(stdout=""),
+                _FakeExecResult(stdout="cleanup_done"),
+            ]
+        )
 
         result = await task.run_action(runtime)
         assert result["status"] == TaskStatusEnum.SUCCESS
         assert result["target_dirs"] == ["/data/cache"]
 
         # Verify the executed shell command actually used -delete (not -exec rm).
-        executed_cmd = runtime.execute.await_args.args[0].command
+        executed_cmd = runtime.execute.await_args_list[1].args[0].command
         assert "-delete" in executed_cmd
         assert "-exec rm" not in executed_cmd
 
     @pytest.mark.asyncio
-    async def test_run_action_re_raises_on_error(self):
+    async def test_run_action_excludes_running_containers_from_every_target(self):
+        task = FileCleanupTask(
+            target_dirs=[
+                TargetDirConfig(path="/data/logs", exclude_files=["docuum.log"]),
+                TargetDirConfig(path="/data/service_status"),
+            ]
+        )
+        runtime = AsyncMock()
+        runtime._config = type("C", (), {"host": "10.0.0.1"})()
+        runtime.execute = AsyncMock(
+            side_effect=[
+                _FakeExecResult(stdout="worker-a\nworker-b\n"),
+                _FakeExecResult(stdout="cleanup_done"),
+                _FakeExecResult(stdout="cleanup_done"),
+            ]
+        )
+
+        result = await task.run_action(runtime)
+
+        assert result["status"] == TaskStatusEnum.SUCCESS
+        assert runtime.execute.await_count == 3
+        commands = [call.args[0].command for call in runtime.execute.await_args_list]
+        assert commands[0] == "docker ps --format '{{.Names}}'"
+        assert '-not -path "/data/logs/worker-a/*"' in commands[1]
+        assert '-not -path "/data/logs/worker-b/*"' in commands[1]
+        assert '-not -path "/data/service_status/worker-a/*"' in commands[2]
+        assert '-not -path "/data/service_status/worker-b/*"' in commands[2]
+
+    @pytest.mark.asyncio
+    async def test_run_action_skips_all_cleanup_when_docker_query_fails(self):
+        task = FileCleanupTask(target_dirs=[TargetDirConfig(path="/data/logs")])
+        runtime = AsyncMock()
+        runtime._config = type("C", (), {"host": "10.0.0.1"})()
+        runtime.execute = AsyncMock(side_effect=RuntimeError("docker unavailable"))
+
+        with pytest.raises(RuntimeError, match="docker unavailable"):
+            await task.run_action(runtime)
+
+        assert runtime.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_run_action_skips_all_cleanup_on_nonzero_docker_result(self):
+        task = FileCleanupTask(target_dirs=[TargetDirConfig(path="/data/logs")])
+        runtime = AsyncMock()
+        runtime._config = type("C", (), {"host": "10.0.0.1"})()
+        runtime.execute = AsyncMock(return_value=_FakeExecResult(exit_code=1, stdout=""))
+
+        with pytest.raises(RuntimeError, match="docker ps failed with exit code 1"):
+            await task.run_action(runtime)
+
+        assert runtime.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_run_action_skips_all_cleanup_on_invalid_container_name(self):
+        task = FileCleanupTask(target_dirs=[TargetDirConfig(path="/data/logs")])
+        runtime = AsyncMock()
+        runtime._config = type("C", (), {"host": "10.0.0.1"})()
+        runtime.execute = AsyncMock(return_value=_FakeExecResult(stdout="bad;name\n"))
+
+        with pytest.raises(ValueError, match="Invalid Docker container name"):
+            await task.run_action(runtime)
+
+        assert runtime.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_run_action_re_raises_on_cleanup_error(self):
         task = FileCleanupTask(target_dirs=[TargetDirConfig(path="/data/cache")])
 
         runtime = AsyncMock()
         runtime._config = type("C", (), {"host": "10.0.0.1"})()
-        runtime.execute = AsyncMock(side_effect=RuntimeError("boom"))
+        runtime.execute = AsyncMock(
+            side_effect=[
+                _FakeExecResult(stdout=""),
+                RuntimeError("boom"),
+            ]
+        )
 
         with pytest.raises(RuntimeError, match="boom"):
             await task.run_action(runtime)
+
+        assert runtime.execute.await_count == 2
