@@ -1,4 +1,5 @@
 # rock/admin/scheduler/tasks/file_cleanup_task.py
+import re
 from dataclasses import dataclass, field
 
 from rock.admin.proto.request import SandboxCommand as Command
@@ -22,6 +23,8 @@ _PATH_BLACKLIST: tuple[str, ...] = (
     "/",
     "/tmp/miniforge",
 )
+
+_CONTAINER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 @dataclass
@@ -251,7 +254,31 @@ class FileCleanupTask(BaseTask):
 
         return " ".join(parts) + " "
 
-    def _build_cleanup_command(self, dir_config: TargetDirConfig) -> str:
+    @staticmethod
+    def _parse_running_container_names(output: str) -> list[str]:
+        names = []
+        seen = set()
+        for line in output.splitlines():
+            name = line.strip()
+            if not name:
+                continue
+            if not _CONTAINER_NAME_PATTERN.fullmatch(name):
+                raise ValueError(f"Invalid Docker container name in output: {name!r}")
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+    @staticmethod
+    def _build_container_exclude_dirs(target_dir: str, container_names: list[str]) -> list[str]:
+        root = target_dir.rstrip("/")
+        return [f"{root}/{name}" for name in container_names]
+
+    def _build_cleanup_command(
+        self,
+        dir_config: TargetDirConfig,
+        extra_exclude_dirs: list[str] | None = None,
+    ) -> str:
         """Build the shell command for cleaning up files in a single directory.
 
         Performance:
@@ -280,6 +307,8 @@ class FileCleanupTask(BaseTask):
 
         Args:
             dir_config: The target directory configuration with its exclusions
+            extra_exclude_dirs: Runtime directory paths to exclude in addition to
+                the configured directory exclusions.
 
         Returns:
             Shell command string
@@ -287,10 +316,15 @@ class FileCleanupTask(BaseTask):
         target_dir = dir_config.path
         size_bytes = parse_size_to_bytes(self.max_file_size)
         size_find_expr = f"-size +{size_bytes}c"
-        exclude_expr = self._build_exclude_expr(dir_config)
+        effective_config = TargetDirConfig(
+            path=dir_config.path,
+            exclude_dirs=[*dir_config.exclude_dirs, *(extra_exclude_dirs or [])],
+            exclude_files=dir_config.exclude_files,
+        )
+        exclude_expr = self._build_exclude_expr(effective_config)
 
         dir_exclude_not_parts = []
-        for exclude_dir in dir_config.exclude_dirs:
+        for exclude_dir in effective_config.exclude_dirs:
             dir_exclude_not_parts.append(self._build_not_path_pattern(exclude_dir, target_dir, is_dir=True))
         dir_exclude_expr = " ".join(dir_exclude_not_parts) + " " if dir_exclude_not_parts else ""
 
@@ -326,13 +360,36 @@ class FileCleanupTask(BaseTask):
             logger.warning("No target directories configured for file cleanup task")
             return {"status": TaskStatusEnum.SUCCESS, "message": "no target directories configured"}
 
+        try:
+            docker_result = await runtime.execute(
+                Command(
+                    command="docker ps --format '{{.Names}}'",
+                    shell=True,
+                    check=True,
+                    sandbox_id="scheduler-task",
+                )
+            )
+            if docker_result.exit_code != 0:
+                raise RuntimeError(f"docker ps failed with exit code {docker_result.exit_code}")
+            running_container_names = self._parse_running_container_names(docker_result.stdout or "")
+        except Exception as e:
+            logger.exception(f"[{self.type}] [{runtime._config.host}] Failed to list running Docker containers: {e}")
+            raise
+
         results = {}
         has_error = False
 
         for dir_config in self.target_dirs:
             target_dir = dir_config.path
             try:
-                command = self._build_cleanup_command(dir_config)
+                container_exclude_dirs = self._build_container_exclude_dirs(
+                    target_dir,
+                    running_container_names,
+                )
+                command = self._build_cleanup_command(
+                    dir_config,
+                    extra_exclude_dirs=container_exclude_dirs,
+                )
                 result = await runtime.execute(
                     Command(command=command, shell=True, check=True, sandbox_id="scheduler-task")
                 )
