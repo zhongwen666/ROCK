@@ -153,13 +153,23 @@ class SandboxProxyService:
             logger.info("APScheduler started for HTTP pool metrics collection (deferred)")
 
     async def _collect_http_pool_metrics(self):
-        pool_stats = self._rock_config.http_pool_manager.get_pool_stats()
-        stats = pool_stats.get("proxy")
-        if not stats:
-            return
-        self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_ACTIVE_CONNECTIONS, stats["active"])
-        self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_IDLE_CONNECTIONS, stats["idle"])
-        self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_PENDING_REQUESTS, stats["pending_requests"])
+        try:
+            pool_stats = self._rock_config.http_pool_manager.get_pool_stats()
+            stats = pool_stats.get("proxy")
+            if not stats:
+                logger.warning(f"http pool metrics: proxy pool not found, available pools: {list(pool_stats.keys())}")
+                return
+            logger.info(
+                f"http pool metrics: active={stats['active']}, idle={stats['idle']}, "
+                f"pending={stats['pending_requests']}"
+            )
+            self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_ACTIVE_CONNECTIONS, stats["active"])
+            self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_IDLE_CONNECTIONS, stats["idle"])
+            self.metrics_monitor.record_gauge_by_name(
+                MetricsConstants.HTTP_POOL_PENDING_REQUESTS, stats["pending_requests"]
+            )
+        except Exception as e:
+            logger.error(f"Failed to collect HTTP pool metrics: {e}", exc_info=True)
 
     @monitor_sandbox_operation()
     async def create_session(self, request: CreateSessionRequest) -> CreateBashSessionResponse:
