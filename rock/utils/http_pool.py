@@ -57,10 +57,11 @@ class HttpPoolManager:
             try:
                 pool = client._transport._pool
                 connections = pool.connections
+                active = sum(1 for c in connections if not c.is_idle() and not c.is_closed())
                 stats[name] = {
-                    "active": sum(1 for c in connections if not c.is_idle() and not c.is_closed()),
+                    "active": active,
                     "idle": sum(1 for c in connections if c.is_idle() and not c.is_closed()),
-                    "pending_requests": len(pool._requests),
+                    "pending_requests": max(0, len(pool._requests) - active),
                 }
             except (AttributeError, TypeError):
                 logger.debug(f"http pool '{name}': unable to read pool internals")
