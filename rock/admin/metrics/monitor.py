@@ -121,6 +121,11 @@ class MetricsMonitor:
         self._register_counter(MetricsConstants.METASTORE_DB_TOTAL, "Number of total DB operations")
         self._register_gauge(MetricsConstants.METASTORE_DB_RT, "DB operation response time", "ms")
 
+        # HTTP connection pool metrics
+        self._register_gauge(MetricsConstants.HTTP_POOL_ACTIVE_CONNECTIONS, "Active connections in HTTP pool")
+        self._register_gauge(MetricsConstants.HTTP_POOL_IDLE_CONNECTIONS, "Idle connections in HTTP pool")
+        self._register_gauge(MetricsConstants.HTTP_POOL_PENDING_REQUESTS, "Pending requests waiting for a connection")
+
     def _register_counter(self, name: str, description: str, unit: str = "1"):
         self.counters[name] = self.create_counter(name, description, unit)
 

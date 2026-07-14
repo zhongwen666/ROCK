@@ -37,3 +37,7 @@ class MetricsConstants:
     METASTORE_DB_SUCCESS = "meta_store.db.success"
     METASTORE_DB_FAILURE = "meta_store.db.failure"
     METASTORE_DB_RT = "meta_store.db.rt"
+
+    HTTP_POOL_ACTIVE_CONNECTIONS = "http_pool.active_connections"
+    HTTP_POOL_IDLE_CONNECTIONS = "http_pool.idle_connections"
+    HTTP_POOL_PENDING_REQUESTS = "http_pool.pending_requests"
