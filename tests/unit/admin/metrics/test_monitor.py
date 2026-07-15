@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from rock.admin.metrics.constants import MetricsConstants
 from rock.admin.metrics.monitor import MetricsMonitor, aggregate_metrics
+from rock.admin.scheduler.metrics import SchedulerMetrics
 
 
 def test_aggregate_metrics():
@@ -247,10 +248,35 @@ class TestMetastoreMetricsRegistration:
 
 
 class TestSchedulerMetricPrimitives:
+    def test_observable_gauge_is_collected_repeatedly(self):
+        monitor = _create_dev_monitor()
+        monitor.register_observable_gauge(
+            "scheduler.test.state",
+            lambda: [(7, {"state": "ready"})],
+            "Test scheduler state",
+        )
+
+        first = monitor.metric_reader.get_metrics_data()
+        second = monitor.metric_reader.get_metrics_data()
+
+        for metrics_data in (first, second):
+            data_points = [
+                data_point
+                for resource_metrics in metrics_data.resource_metrics
+                for scope_metrics in resource_metrics.scope_metrics
+                for metric in scope_metrics.metrics
+                if metric.name == "xrl_gateway.scheduler.test.state"
+                for data_point in metric.data.data_points
+            ]
+            assert len(data_points) == 1
+            assert data_points[0].value == 7
+            assert data_points[0].attributes["state"] == "ready"
+            assert data_points[0].attributes["env"] == "dev"
+
     def test_all_scheduler_metrics_are_registered(self):
         monitor = _create_dev_monitor()
 
-        expected_gauges = {
+        expected_observable_gauges = {
             MetricsConstants.SCHEDULER_UP,
             MetricsConstants.SCHEDULER_WORKERS_ALIVE,
             MetricsConstants.SCHEDULER_WORKER_ALIVE,
@@ -258,14 +284,21 @@ class TestSchedulerMetricPrimitives:
             MetricsConstants.SCHEDULER_WORKER_CACHE_TTL,
             MetricsConstants.SCHEDULER_TASKS_REGISTERED,
             MetricsConstants.SCHEDULER_TASK_INTERVAL,
-            "scheduler.worker.last_failure.timestamp",
         }
+        expected_gauges = {"scheduler.worker.last_failure.timestamp"}
         expected_counters = {
             MetricsConstants.SCHEDULER_WORKER_CACHE_REFRESH_TOTAL,
             MetricsConstants.SCHEDULER_WORKER_FAILURES_TOTAL,
         }
 
+        assert expected_gauges.isdisjoint(monitor.gauges)
+        assert expected_counters.isdisjoint(monitor.counters)
+        assert expected_observable_gauges.isdisjoint(monitor.observable_gauges)
+
+        SchedulerMetrics(monitor)
+
         assert expected_gauges <= monitor.gauges.keys()
+        assert expected_observable_gauges <= monitor.observable_gauges.keys()
         assert expected_counters <= monitor.counters.keys()
         assert "scheduler.control_events.total" not in monitor.counters
         assert {

@@ -1,6 +1,5 @@
 import asyncio
 import threading
-from collections import defaultdict
 
 import pytest
 
@@ -17,6 +16,9 @@ class FakeMonitor:
     def __init__(self, force_flush_result=True):
         self.counters = []
         self.gauges = []
+        self.registered_counters = set()
+        self.registered_gauges = set()
+        self.observable_gauges = {}
         self.force_flush_result = force_flush_result
         self.force_flush_calls = 0
 
@@ -25,6 +27,18 @@ class FakeMonitor:
 
     def record_gauge_by_name(self, name, value, attributes=None):
         self.gauges.append((name, value, attributes or {}))
+
+    def register_counter(self, name, description, unit="1"):
+        self.registered_counters.add(name)
+
+    def register_gauge(self, name, description, unit="1"):
+        self.registered_gauges.add(name)
+
+    def register_observable_gauge(self, name, callback, description, unit="1"):
+        self.observable_gauges[name] = callback
+
+    def collect_observable_gauge(self, name):
+        return list(self.observable_gauges[name]())
 
     def force_flush(self, timeout_millis=10_000):
         self.force_flush_calls += 1
@@ -36,8 +50,7 @@ def _report(task_type="file_cleanup", worker_results=None, duration_ms=1234.5):
         task_type=task_type,
         timestamp="2026-07-14T12:00:00",
         duration_ms=duration_ms,
-        worker_results=worker_results
-        or [WorkerRunResult(worker_ip="10.0.0.1", outcome=WorkerRunOutcome.SUCCESS)],
+        worker_results=worker_results or [WorkerRunResult(worker_ip="10.0.0.1", outcome=WorkerRunOutcome.SUCCESS)],
     )
 
 
@@ -148,23 +161,99 @@ async def test_record_task_report_only_exports_failed_worker_ips_with_bounded_la
     assert monitor.force_flush_calls == 1
 
 
-def test_set_alive_workers_marks_removed_ips_dead():
+def test_scheduler_state_is_returned_on_every_observable_collection():
     monitor = FakeMonitor()
     metrics = SchedulerMetrics(monitor)
 
+    metrics.set_scheduler_up(True)
+    metrics.set_registered_task("file_cleanup", 60, True)
     metrics.set_alive_workers({"10.0.0.1", "10.0.0.2"})
+
+    for _ in range(2):
+        assert monitor.collect_observable_gauge("scheduler.up") == [(1, {})]
+        assert monitor.collect_observable_gauge("scheduler.workers.alive") == [(2, {})]
+        assert monitor.collect_observable_gauge("scheduler.tasks.registered") == [(1, {"task_type": "file_cleanup"})]
+        assert monitor.collect_observable_gauge("scheduler.task.interval") == [(60, {"task_type": "file_cleanup"})]
+
+
+def test_removed_worker_ip_is_observed_as_zero_once():
+    monitor = FakeMonitor()
+    metrics = SchedulerMetrics(monitor)
+    metrics.set_alive_workers({"10.0.0.1", "10.0.0.2"})
+    monitor.collect_observable_gauge("scheduler.worker.alive")
+
     metrics.set_alive_workers({"10.0.0.2", "10.0.0.3"})
 
-    per_ip_values = defaultdict(list)
-    for name, value, attrs in monitor.gauges:
-        if name == "scheduler.worker.alive":
-            per_ip_values[attrs["worker_ip"]].append(value)
-    assert per_ip_values == {
-        "10.0.0.1": [1, 0],
-        "10.0.0.2": [1],
-        "10.0.0.3": [1],
-    }
-    assert ("scheduler.workers.alive", 2, {}) in monitor.gauges
+    assert sorted(
+        monitor.collect_observable_gauge("scheduler.worker.alive"),
+        key=lambda item: item[1]["worker_ip"],
+    ) == [
+        (0, {"worker_ip": "10.0.0.1"}),
+        (1, {"worker_ip": "10.0.0.2"}),
+        (1, {"worker_ip": "10.0.0.3"}),
+    ]
+    assert sorted(
+        monitor.collect_observable_gauge("scheduler.worker.alive"),
+        key=lambda item: item[1]["worker_ip"],
+    ) == [
+        (1, {"worker_ip": "10.0.0.2"}),
+        (1, {"worker_ip": "10.0.0.3"}),
+    ]
+
+
+def test_worker_observation_construction_does_not_hold_state_lock():
+    iteration_started = threading.Event()
+    release_iteration = threading.Event()
+    setter_completed = threading.Event()
+    monitor = FakeMonitor()
+    metrics = SchedulerMetrics(monitor)
+
+    class BlockingWorkerIPs:
+        def copy(self):
+            return self
+
+        def __iter__(self):
+            iteration_started.set()
+            release_iteration.wait(timeout=2)
+            yield "10.0.0.1"
+
+    metrics._alive_worker_ips = BlockingWorkerIPs()
+    collector = threading.Thread(
+        target=monitor.collect_observable_gauge,
+        args=("scheduler.worker.alive",),
+    )
+
+    def update_scheduler_state():
+        metrics.set_scheduler_up(True)
+        setter_completed.set()
+
+    setter = threading.Thread(target=update_scheduler_state)
+    collector.start()
+    assert iteration_started.wait(timeout=1)
+    setter.start()
+    try:
+        completed_before_iteration_released = setter_completed.wait(timeout=0.2)
+    finally:
+        release_iteration.set()
+        collector.join(timeout=1)
+        setter.join(timeout=1)
+
+    assert completed_before_iteration_released
+
+
+def test_unregistered_task_is_observed_as_zero_once():
+    monitor = FakeMonitor()
+    metrics = SchedulerMetrics(monitor)
+    metrics.set_registered_task("file_cleanup", 60, True)
+    monitor.collect_observable_gauge("scheduler.tasks.registered")
+    monitor.collect_observable_gauge("scheduler.task.interval")
+
+    metrics.set_registered_task("file_cleanup", 60, False)
+
+    assert monitor.collect_observable_gauge("scheduler.tasks.registered") == [(0, {"task_type": "file_cleanup"})]
+    assert monitor.collect_observable_gauge("scheduler.task.interval") == [(0, {"task_type": "file_cleanup"})]
+    assert monitor.collect_observable_gauge("scheduler.tasks.registered") == []
+    assert monitor.collect_observable_gauge("scheduler.task.interval") == []
 
 
 @pytest.mark.asyncio
@@ -179,7 +268,8 @@ async def test_failed_worker_cache_refresh_preserves_alive_ips_and_flushes():
 
     assert not any(name == "scheduler.worker.alive" for name, _, _ in monitor.gauges)
     assert ("scheduler.worker_cache.refresh.total", 1, {"outcome": "failure"}) in monitor.counters
-    assert ("scheduler.worker_cache.ttl", 3600, {}) in monitor.gauges
+    assert monitor.collect_observable_gauge("scheduler.worker_cache.ttl") == [(3600, {})]
+    assert monitor.collect_observable_gauge("scheduler.worker.alive") == [(1, {"worker_ip": "10.0.0.1"})]
     assert monitor.force_flush_calls == 1
 
 
@@ -192,8 +282,11 @@ async def test_successful_worker_cache_refresh_updates_timestamp_and_ips(monkeyp
     metrics.record_worker_cache_refresh(success=True, cache_ttl=60, worker_ips={"10.0.0.1"})
     await metrics.flush_and_wait()
 
-    assert ("scheduler.worker_cache.last_success.timestamp", 123.0, {}) in monitor.gauges
-    assert ("scheduler.worker.alive", 1, {"worker_ip": "10.0.0.1"}) in monitor.gauges
+    for _ in range(2):
+        assert monitor.collect_observable_gauge("scheduler.worker_cache.last_success.timestamp") == [(123.0, {})]
+        assert monitor.collect_observable_gauge("scheduler.worker_cache.ttl") == [(60, {})]
+        assert monitor.collect_observable_gauge("scheduler.workers.alive") == [(1, {})]
+        assert monitor.collect_observable_gauge("scheduler.worker.alive") == [(1, {"worker_ip": "10.0.0.1"})]
 
 
 @pytest.mark.asyncio
