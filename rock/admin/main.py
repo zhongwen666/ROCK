@@ -26,6 +26,7 @@ from rock.admin.entrypoints.sandbox_api import sandbox_router, set_sandbox_manag
 from rock.admin.entrypoints.sandbox_proxy_api import sandbox_proxy_router, set_sandbox_proxy_service
 from rock.admin.entrypoints.warmup_api import set_warmup_service, warmup_router
 from rock.admin.gem.api import gem_router, set_env_service
+from rock.admin.metrics.http_connection import ObservedHttpToolsProtocol, ObservedWebSocketProtocol
 from rock.admin.scheduler.scheduler import SchedulerThread, WorkerIPCache
 from rock.admin.scheduler.task_base import BaseTask
 from rock.admin.scheduler.task_factory import TaskFactory
@@ -47,7 +48,13 @@ from rock.sandbox.operator.factory import OperatorContext, OperatorFactory, oper
 from rock.sandbox.sandbox_meta_store import SandboxMetaStore
 from rock.sandbox.service.sandbox_proxy_service import SandboxProxyService
 from rock.sandbox.service.warmup_service import WarmupService
-from rock.utils import EAGLE_EYE_TRACE_ID, sandbox_id_ctx_var, trace_id_ctx_var
+from rock.utils import (
+    EAGLE_EYE_TRACE_ID,
+    connection_id_ctx_var,
+    connection_request_seq_ctx_var,
+    sandbox_id_ctx_var,
+    trace_id_ctx_var,
+)
 from rock.utils.concurrent_helper import get_ray_executor
 from rock.utils.providers import RedisProvider
 from rock.utils.system import is_primary_pod
@@ -255,6 +262,11 @@ async def root():
 async def log_requests_and_responses(request: Request, call_next):
     req_logger = init_logger("accessLog")
 
+    connection_id = getattr(request.state, "connection_id", "")
+    connection_request_seq = getattr(request.state, "connection_request_seq", None)
+    connection_id_ctx_var.set(str(connection_id) if connection_id else "")
+    connection_request_seq_ctx_var.set(connection_request_seq)
+
     request_json = dict(request.query_params)
     if request.headers.get("content-type", "").lower().startswith("application/json"):
         try:
@@ -270,12 +282,22 @@ async def log_requests_and_responses(request: Request, call_next):
 
     trace_id = request.headers.get(EAGLE_EYE_TRACE_ID) if request.headers.get(EAGLE_EYE_TRACE_ID) else uuid.uuid4().hex
     trace_id_ctx_var.set(trace_id)
+    request_content = {
+        **request_json,
+        "_worker_observation": {
+            "event": "access.request_started",
+            "worker_pid": str(os.getpid()),
+            "connection_id": connection_id,
+            "connection_request_seq": connection_request_seq,
+            "trace_id": trace_id,
+        },
+    }
     request_data = {
         "access_type": "request",
         "method": request.method,
         "url": str(request.url),
         "headers": dict(request.headers),
-        "request_content": request_json,
+        "request_content": request_content,
     }
     req_logger.info(json.dumps(request_data, indent=2))
 
@@ -354,7 +376,8 @@ def main():
         port=args.port,
         workers=workers,
         loop="uvloop",
-        http="httptools",
+        http=ObservedHttpToolsProtocol,
+        ws=ObservedWebSocketProtocol,
         ws_ping_interval=None,
         ws_ping_timeout=None,
         timeout_keep_alive=30,

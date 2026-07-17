@@ -1,6 +1,8 @@
 import asyncio  # noqa: I001
 import json
+import logging
 import os
+import time
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import Headers
 
@@ -29,6 +31,7 @@ from rock.actions.sandbox.response import State
 from rock.actions.sandbox.sandbox_info import SandboxInfo
 from rock.admin.metrics.constants import MetricsConstants
 from rock.admin.metrics.decorator import monitor_sandbox_operation
+from rock.admin.metrics.http_connection import log_observation_event, worker_connection_tracker
 from rock.admin.metrics.monitor import MetricsMonitor
 from rock.admin.proto.request import SandboxBashAction as BashAction
 from rock.admin.proto.request import SandboxCloseBashSessionRequest as CloseBashSessionRequest
@@ -50,7 +53,7 @@ from rock.sandbox.utils.timeout import SandboxTimeoutHelper
 from rock.sdk.common.exceptions import BadRequestRockError
 from rock.rocklet import __version__ as swe_version
 from rock.sandbox import __version__ as gateway_version
-from rock.utils import EAGLE_EYE_TRACE_ID, trace_id_ctx_var
+from rock.utils import EAGLE_EYE_TRACE_ID, connection_id_ctx_var, connection_request_seq_ctx_var, trace_id_ctx_var
 
 logger = init_logger(__name__)
 
@@ -67,6 +70,7 @@ class SandboxProxyService:
                 "worker_pid": str(os.getpid()),
             },
         )
+        worker_connection_tracker.bind_monitor(self.metrics_monitor)
         self.oss_config: OssConfig = rock_config.oss
         self.proxy_config: ProxyServiceConfig = rock_config.proxy_service
         logger.info(f"proxy config: {self.proxy_config}")
@@ -159,15 +163,35 @@ class SandboxProxyService:
             if not stats:
                 logger.warning(f"http pool metrics: proxy pool not found, available pools: {list(pool_stats.keys())}")
                 return
-            logger.info(
-                f"http pool metrics: active={stats['active']}, idle={stats['idle']}, "
-                f"pending={stats['pending_requests']}"
+            worker_snapshot = worker_connection_tracker.snapshot()
+            log_observation_event(
+                "http_pool.snapshot",
+                pool="proxy",
+                active_connections=stats["active"],
+                idle_connections=stats["idle"],
+                inflight_requests=stats["inflight_requests"],
+                pending_requests=stats["pending_requests"],
+                server_active_connections=worker_snapshot.active_connections,
+                accepted_connections=worker_snapshot.accepted_connections,
+                closed_connections=worker_snapshot.closed_connections,
+                proxy_requests_inflight=worker_snapshot.proxy_requests_inflight,
+                sse_inflight=worker_snapshot.sse_inflight,
             )
             self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_ACTIVE_CONNECTIONS, stats["active"])
             self.metrics_monitor.record_gauge_by_name(MetricsConstants.HTTP_POOL_IDLE_CONNECTIONS, stats["idle"])
             self.metrics_monitor.record_gauge_by_name(
+                MetricsConstants.HTTP_POOL_INFLIGHT_REQUESTS, stats["inflight_requests"]
+            )
+            self.metrics_monitor.record_gauge_by_name(
                 MetricsConstants.HTTP_POOL_PENDING_REQUESTS, stats["pending_requests"]
             )
+            self.metrics_monitor.record_gauge_by_name(
+                MetricsConstants.HTTP_SERVER_ACTIVE_CONNECTIONS, worker_snapshot.active_connections
+            )
+            self.metrics_monitor.record_gauge_by_name(
+                MetricsConstants.PROXY_REQUEST_INFLIGHT, worker_snapshot.proxy_requests_inflight
+            )
+            self.metrics_monitor.record_gauge_by_name(MetricsConstants.PROXY_SSE_INFLIGHT, worker_snapshot.sse_inflight)
         except Exception as e:
             logger.error(f"Failed to collect HTTP pool metrics: {e}", exc_info=True)
 
@@ -965,105 +989,347 @@ class SandboxProxyService:
         query_string: str = "",
     ) -> JSONResponse | StreamingResponse | Response:
         """HTTP proxy that supports all methods and streaming (SSE) responses."""
-        await self._update_expire_time(sandbox_id)
+        connection_id = connection_id_ctx_var.get()
+        connection_request_seq = connection_request_seq_ctx_var.get()
+        trace_id = trace_id_ctx_var.get()
+        request_started_at = time.perf_counter()
+        correlation = {
+            "connection_id": connection_id,
+            "connection_request_seq": connection_request_seq,
+            "trace_id": trace_id,
+            "sandbox_id": sandbox_id,
+            "method": method,
+            "path": target_path,
+        }
 
-        # content-encoding is excluded because httpx decompresses the body automatically;
-        # forwarding it would cause ERR_CONTENT_DECODING_FAILED in the browser.
-        EXCLUDED_HEADERS = {"host", "content-length", "transfer-encoding", "content-encoding"}
+        def emit_event(event: str, *, level: int = logging.INFO, **fields: object) -> None:
+            log_observation_event(event, level=level, **fields)
 
-        def filter_headers(raw_headers: Headers) -> dict:
-            return {k: v for k, v in raw_headers.items() if k.lower() not in EXCLUDED_HEADERS}
-
-        def rewrite_location(location: str) -> str:
-            """Rewrite upstream Location header to include proxy prefix.
-
-            Always outputs a relative path (no scheme/host) so the browser
-            inherits the correct scheme (https) from the current page.
-            """
-            from urllib.parse import urlparse
-
-            parsed = urlparse(location)
-            # Absolute URL pointing to upstream → strip scheme+host, keep path+query
-            if parsed.scheme and parsed.netloc:
-                path = parsed.path or "/"
-                qs = f"?{parsed.query}" if parsed.query else ""
-                location = f"{path}{qs}"
-            # proxy_prefix is always a path (e.g. /sandboxes/sb1/proxy/port/8006)
-            return f"{proxy_prefix.rstrip('/')}{location}"
-
-        status_list = await self.get_service_status(sandbox_id)
-
-        host_ip = status_list[0].get("host_ip")
-        if port is None:
-            service_status = ServiceStatus.from_dict(status_list[0])
-            port = service_status.get_mapped_port(Port.SERVER)
-        qs = f"?{query_string}" if query_string else ""
-        target_url = f"http://{host_ip}:{port}/{target_path}{qs}"
-
-        request_headers = filter_headers(headers)
-        request_kwargs: dict = {"content": body} if body else {}
-
-        resp = await self._proxy_client.send(
-            self._proxy_client.build_request(
-                method=method,
-                url=target_url,
-                headers=request_headers,
-                timeout=120,
-                **request_kwargs,
-            ),
-            stream=True,
+        proxy_inflight = worker_connection_tracker.proxy_request_started()
+        emit_event(
+            "proxy.request_started",
+            **correlation,
+            proxy_requests_inflight=proxy_inflight,
         )
 
-        content_type = resp.headers.get("content-type", "")
-        is_sse = "text/event-stream" in content_type
-        response_headers = filter_headers(resp.headers)
+        request_finished = False
+        stream_owns_request = False
+        finish_reason = "error"
+        finish_status: int | None = None
+        finish_exception: BaseException | None = None
 
-        # Rewrite Location header for 3xx responses when proxy_prefix is set
-        if proxy_prefix and resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("location")
-            if location:
-                response_headers["location"] = rewrite_location(location)
-
-        if is_sse:
-
-            async def event_stream():
-                """Forward upstream bytes to downstream as soon as they arrive."""
-                try:
-                    if resp.status_code >= 400:
-                        yield await resp.aread()
-                        return
-
-                    async for chunk in resp.aiter_bytes():
-                        if chunk:
-                            yield chunk
-                finally:
-                    await resp.aclose()
-
-            return StreamingResponse(
-                event_stream(),
-                status_code=resp.status_code,
-                media_type="text/event-stream",
-                headers=response_headers,
+        def finish_proxy_request(
+            reason: str,
+            *,
+            status_code: int | None = None,
+            exc: BaseException | None = None,
+        ) -> None:
+            nonlocal request_finished
+            if request_finished:
+                return
+            request_finished = True
+            remaining = worker_connection_tracker.proxy_request_finished()
+            emit_event(
+                "proxy.request_finished",
+                level=logging.ERROR if reason.endswith("error") else logging.INFO,
+                **correlation,
+                status_code=status_code,
+                reason=reason,
+                duration_ms=round((time.perf_counter() - request_started_at) * 1000, 3),
+                proxy_requests_inflight=remaining,
+                exception_type=type(exc).__name__ if exc else None,
+                exception_message=str(exc) if exc else None,
             )
 
         try:
-            raw_content = await resp.aread()
+            await self._update_expire_time(sandbox_id)
 
-            if "application/json" in content_type:
-                return JSONResponse(
+            # content-encoding is excluded because httpx decompresses the body automatically;
+            # forwarding it would cause ERR_CONTENT_DECODING_FAILED in the browser.
+            EXCLUDED_HEADERS = {"host", "content-length", "transfer-encoding", "content-encoding"}
+
+            def filter_headers(raw_headers: Headers) -> dict:
+                return {k: v for k, v in raw_headers.items() if k.lower() not in EXCLUDED_HEADERS}
+
+            def rewrite_location(location: str) -> str:
+                """Rewrite upstream Location header to include proxy prefix.
+
+                Always outputs a relative path (no scheme/host) so the browser
+                inherits the correct scheme (https) from the current page.
+                """
+                from urllib.parse import urlparse
+
+                parsed = urlparse(location)
+                # Absolute URL pointing to upstream → strip scheme+host, keep path+query
+                if parsed.scheme and parsed.netloc:
+                    path = parsed.path or "/"
+                    qs = f"?{parsed.query}" if parsed.query else ""
+                    location = f"{path}{qs}"
+                # proxy_prefix is always a path (e.g. /sandboxes/sb1/proxy/port/8006)
+                return f"{proxy_prefix.rstrip('/')}{location}"
+
+            status_list = await self.get_service_status(sandbox_id)
+
+            host_ip = status_list[0].get("host_ip")
+            if port is None:
+                service_status = ServiceStatus.from_dict(status_list[0])
+                port = service_status.get_mapped_port(Port.SERVER)
+            qs = f"?{query_string}" if query_string else ""
+            target_url = f"http://{host_ip}:{port}/{target_path}{qs}"
+
+            request_headers = filter_headers(headers)
+            request_kwargs: dict = {"content": body} if body else {}
+            send_started_at = time.perf_counter()
+            emit_event(
+                "proxy.send_started",
+                **correlation,
+                upstream_host=host_ip,
+                upstream_port=port,
+            )
+
+            try:
+                resp = await self._proxy_client.send(
+                    self._proxy_client.build_request(
+                        method=method,
+                        url=target_url,
+                        headers=request_headers,
+                        timeout=120,
+                        **request_kwargs,
+                    ),
+                    stream=True,
+                )
+            except httpx.PoolTimeout as exc:
+                worker_connection_tracker.pool_timeout()
+                emit_event(
+                    "proxy.pool_timeout",
+                    level=logging.ERROR,
+                    **correlation,
+                    upstream_host=host_ip,
+                    upstream_port=port,
+                    send_to_error_ms=round((time.perf_counter() - send_started_at) * 1000, 3),
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                )
+                raise
+            except asyncio.CancelledError as exc:
+                emit_event(
+                    "proxy.send_error",
+                    **correlation,
+                    upstream_host=host_ip,
+                    upstream_port=port,
+                    reason="cancelled",
+                    send_to_error_ms=round((time.perf_counter() - send_started_at) * 1000, 3),
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                )
+                raise
+            except Exception as exc:
+                emit_event(
+                    "proxy.send_error",
+                    level=logging.ERROR,
+                    **correlation,
+                    upstream_host=host_ip,
+                    upstream_port=port,
+                    reason="error",
+                    send_to_error_ms=round((time.perf_counter() - send_started_at) * 1000, 3),
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                )
+                raise
+
+            content_type = resp.headers.get("content-type", "")
+            is_sse = "text/event-stream" in content_type
+            response_headers = filter_headers(resp.headers)
+            finish_status = resp.status_code
+            emit_event(
+                "proxy.headers_received",
+                **correlation,
+                upstream_host=host_ip,
+                upstream_port=port,
+                status_code=resp.status_code,
+                content_type=content_type,
+                is_sse=is_sse,
+                send_to_headers_ms=round((time.perf_counter() - send_started_at) * 1000, 3),
+            )
+
+            # Rewrite Location header for 3xx responses when proxy_prefix is set
+            if proxy_prefix and resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                if location:
+                    response_headers["location"] = rewrite_location(location)
+
+            if is_sse:
+                sse_started_at = time.perf_counter()
+
+                async def event_stream():
+                    """Forward upstream bytes and observe the complete SSE lifecycle."""
+                    chunk_count = 0
+                    byte_count = 0
+                    termination_reason = "eof"
+                    close_failed = False
+                    emit_event(
+                        "sse.iterator_started",
+                        **correlation,
+                        status_code=resp.status_code,
+                    )
+                    try:
+                        if resp.status_code >= 400:
+                            chunk = await resp.aread()
+                            if chunk:
+                                chunk_count += 1
+                                byte_count += len(chunk)
+                                yield chunk
+                        else:
+                            async for chunk in resp.aiter_bytes():
+                                if chunk:
+                                    chunk_count += 1
+                                    byte_count += len(chunk)
+                                    yield chunk
+                    except (asyncio.CancelledError, GeneratorExit) as exc:
+                        termination_reason = "cancelled"
+                        emit_event(
+                            "sse.cancelled",
+                            **correlation,
+                            status_code=resp.status_code,
+                            duration_ms=round((time.perf_counter() - sse_started_at) * 1000, 3),
+                            chunk_count=chunk_count,
+                            byte_count=byte_count,
+                            exception_type=type(exc).__name__,
+                            exception_message=str(exc),
+                        )
+                        raise
+                    except BaseException as exc:
+                        termination_reason = "error"
+                        emit_event(
+                            "sse.error",
+                            level=logging.ERROR,
+                            **correlation,
+                            status_code=resp.status_code,
+                            duration_ms=round((time.perf_counter() - sse_started_at) * 1000, 3),
+                            chunk_count=chunk_count,
+                            byte_count=byte_count,
+                            exception_type=type(exc).__name__,
+                            exception_message=str(exc),
+                        )
+                        raise
+                    else:
+                        emit_event(
+                            "sse.eof",
+                            **correlation,
+                            status_code=resp.status_code,
+                            duration_ms=round((time.perf_counter() - sse_started_at) * 1000, 3),
+                            chunk_count=chunk_count,
+                            byte_count=byte_count,
+                        )
+                    finally:
+                        emit_event(
+                            "sse.finally_entered",
+                            **correlation,
+                            status_code=resp.status_code,
+                            termination_reason=termination_reason,
+                            duration_ms=round((time.perf_counter() - sse_started_at) * 1000, 3),
+                            chunk_count=chunk_count,
+                            byte_count=byte_count,
+                        )
+                        try:
+                            await resp.aclose()
+                        except BaseException as exc:
+                            close_failed = True
+                            emit_event(
+                                "sse.aclose_error",
+                                level=logging.ERROR,
+                                **correlation,
+                                status_code=resp.status_code,
+                                termination_reason=termination_reason,
+                                exception_type=type(exc).__name__,
+                                exception_message=str(exc),
+                            )
+                            raise
+                        else:
+                            emit_event(
+                                "sse.aclose_done",
+                                **correlation,
+                                status_code=resp.status_code,
+                                termination_reason=termination_reason,
+                            )
+                        finally:
+                            metric_reason = "error" if close_failed else termination_reason
+                            sse_remaining = worker_connection_tracker.sse_finished(
+                                termination_reason,
+                                close_failed=close_failed,
+                            )
+                            emit_event(
+                                "sse.closed",
+                                level=logging.ERROR if metric_reason == "error" else logging.INFO,
+                                **correlation,
+                                status_code=resp.status_code,
+                                termination_reason=metric_reason,
+                                stream_termination_reason=termination_reason,
+                                close_succeeded=not close_failed,
+                                duration_ms=round((time.perf_counter() - sse_started_at) * 1000, 3),
+                                chunk_count=chunk_count,
+                                byte_count=byte_count,
+                                sse_inflight=sse_remaining,
+                            )
+                            finish_proxy_request(
+                                f"sse_{metric_reason}",
+                                status_code=resp.status_code,
+                            )
+
+                streaming_response = StreamingResponse(
+                    event_stream(),
                     status_code=resp.status_code,
-                    content=resp.json(),
+                    media_type="text/event-stream",
                     headers=response_headers,
                 )
+                sse_inflight = worker_connection_tracker.sse_opened()
+                emit_event(
+                    "sse.opened",
+                    **correlation,
+                    status_code=resp.status_code,
+                    content_type=content_type,
+                    upstream_host=host_ip,
+                    upstream_port=port,
+                    sse_inflight=sse_inflight,
+                )
+                stream_owns_request = True
+                return streaming_response
 
-            return Response(
-                status_code=resp.status_code,
-                content=raw_content,
-                media_type=content_type or "application/octet-stream",
-                headers=response_headers,
-            )
+            try:
+                raw_content = await resp.aread()
+
+                if "application/json" in content_type:
+                    finish_reason = "completed"
+                    return JSONResponse(
+                        status_code=resp.status_code,
+                        content=resp.json(),
+                        headers=response_headers,
+                    )
+
+                finish_reason = "completed"
+                return Response(
+                    status_code=resp.status_code,
+                    content=raw_content,
+                    media_type=content_type or "application/octet-stream",
+                    headers=response_headers,
+                )
+            finally:
+                await resp.aclose()
+        except asyncio.CancelledError as exc:
+            finish_reason = "cancelled"
+            finish_exception = exc
+            raise
+        except Exception as exc:
+            finish_reason = "error"
+            finish_exception = exc
+            raise
         finally:
-            await resp.aclose()
+            if not stream_owns_request:
+                finish_proxy_request(
+                    finish_reason,
+                    status_code=finish_status,
+                    exc=finish_exception,
+                )
 
     @monitor_sandbox_operation()
     async def get_status(self, sandbox_id: str, include_all_states: bool = False) -> SandboxStatusResponse:

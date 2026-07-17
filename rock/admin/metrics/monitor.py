@@ -124,7 +124,35 @@ class MetricsMonitor:
         # HTTP connection pool metrics
         self._register_gauge(MetricsConstants.HTTP_POOL_ACTIVE_CONNECTIONS, "Active connections in HTTP pool")
         self._register_gauge(MetricsConstants.HTTP_POOL_IDLE_CONNECTIONS, "Idle connections in HTTP pool")
+        self._register_gauge(MetricsConstants.HTTP_POOL_INFLIGHT_REQUESTS, "In-flight requests in HTTP pool")
         self._register_gauge(MetricsConstants.HTTP_POOL_PENDING_REQUESTS, "Pending requests waiting for a connection")
+        self._register_counter(MetricsConstants.HTTP_POOL_TIMEOUTS, "Requests that timed out waiting for an HTTP pool")
+
+        # Per-worker inbound server connection metrics
+        self._register_counter(
+            MetricsConstants.HTTP_SERVER_ACCEPTED_CONNECTIONS,
+            "TCP connections accepted by this Uvicorn worker",
+        )
+        self._register_counter(
+            MetricsConstants.HTTP_SERVER_CLOSED_CONNECTIONS,
+            "TCP connections closed by this Uvicorn worker",
+        )
+        self._register_gauge(
+            MetricsConstants.HTTP_SERVER_ACTIVE_CONNECTIONS,
+            "Currently active TCP connections owned by this Uvicorn worker",
+        )
+
+        # Proxy request and SSE lifecycle metrics
+        self._register_counter(MetricsConstants.PROXY_REQUEST_TOTAL, "Proxy requests handled by this worker")
+        self._register_gauge(MetricsConstants.PROXY_REQUEST_INFLIGHT, "In-flight proxy requests in this worker")
+        self._register_counter(MetricsConstants.PROXY_SSE_OPENED, "SSE streams opened by this worker")
+        self._register_counter(MetricsConstants.PROXY_SSE_CLOSED, "SSE stream generators finalized by this worker")
+        self._register_gauge(MetricsConstants.PROXY_SSE_INFLIGHT, "In-flight SSE streams in this worker")
+        self._register_counter(MetricsConstants.PROXY_SSE_CANCELLED, "SSE streams cancelled in this worker")
+        self._register_counter(
+            MetricsConstants.PROXY_SSE_ERRORS,
+            "SSE streams ending with iteration or upstream-close errors in this worker",
+        )
 
     def _register_counter(self, name: str, description: str, unit: str = "1"):
         self.counters[name] = self.create_counter(name, description, unit)

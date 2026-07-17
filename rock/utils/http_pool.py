@@ -56,12 +56,21 @@ class HttpPoolManager:
                 continue
             try:
                 pool = client._transport._pool
-                connections = pool.connections
+                connections = list(pool.connections)
+                requests = list(pool._requests)
                 active = sum(1 for c in connections if not c.is_idle() and not c.is_closed())
+                pending = 0
+                for request in requests:
+                    is_queued = getattr(request, "is_queued", None)
+                    if callable(is_queued):
+                        pending += int(bool(is_queued()))
+                    else:
+                        pending += int(getattr(request, "connection", None) is None)
                 stats[name] = {
                     "active": active,
                     "idle": sum(1 for c in connections if c.is_idle() and not c.is_closed()),
-                    "pending_requests": max(0, len(pool._requests) - active),
+                    "inflight_requests": len(requests),
+                    "pending_requests": pending,
                 }
             except (AttributeError, TypeError):
                 logger.debug(f"http pool '{name}': unable to read pool internals")

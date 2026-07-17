@@ -44,12 +44,16 @@ from .system import (
 ENV_POOL = {}
 SANDBOX_ID = "sandbox_id"
 TRACE_ID = "trace_id"
+CONNECTION_ID = "connection_id"
+CONNECTION_REQUEST_SEQ = "connection_request_seq"
 COMMAND_LOG = "command.log"
 EAGLE_EYE_TRACE_ID = "eagleeye-traceid"
 REQUEST_TIMEOUT_SECONDS = 85
 
 sandbox_id_ctx_var = ContextVar(SANDBOX_ID, default="")
 trace_id_ctx_var = ContextVar(TRACE_ID, default="")
+connection_id_ctx_var = ContextVar(CONNECTION_ID, default="")
+connection_request_seq_ctx_var: ContextVar[int | None] = ContextVar(CONNECTION_REQUEST_SEQ, default=None)
 
 __all__ = [
     # System utilities
@@ -89,8 +93,12 @@ __all__ = [
     "ENV_POOL",
     "sandbox_id_ctx_var",
     "trace_id_ctx_var",
+    "connection_id_ctx_var",
+    "connection_request_seq_ctx_var",
     "EAGLE_EYE_TRACE_ID",
     "SANDBOX_ID",
+    "CONNECTION_ID",
+    "CONNECTION_REQUEST_SEQ",
     "COMMAND_LOG",
     "REQUEST_TIMEOUT_SECONDS",
 ]

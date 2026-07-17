@@ -40,4 +40,19 @@ class MetricsConstants:
 
     HTTP_POOL_ACTIVE_CONNECTIONS = "http_pool.active_connections"
     HTTP_POOL_IDLE_CONNECTIONS = "http_pool.idle_connections"
+    HTTP_POOL_INFLIGHT_REQUESTS = "http_pool.inflight_requests"
     HTTP_POOL_PENDING_REQUESTS = "http_pool.pending_requests"
+    HTTP_POOL_TIMEOUTS = "http_pool.pool_timeouts"
+
+    HTTP_SERVER_ACCEPTED_CONNECTIONS = "http_server.accepted_connections"
+    HTTP_SERVER_CLOSED_CONNECTIONS = "http_server.closed_connections"
+    HTTP_SERVER_ACTIVE_CONNECTIONS = "http_server.active_connections"
+
+    PROXY_REQUEST_TOTAL = "proxy.request.total"
+    PROXY_REQUEST_INFLIGHT = "proxy.request.inflight"
+
+    PROXY_SSE_OPENED = "proxy.sse.opened"
+    PROXY_SSE_CLOSED = "proxy.sse.closed"
+    PROXY_SSE_INFLIGHT = "proxy.sse.inflight"
+    PROXY_SSE_CANCELLED = "proxy.sse.cancelled"
+    PROXY_SSE_ERRORS = "proxy.sse.errors"
