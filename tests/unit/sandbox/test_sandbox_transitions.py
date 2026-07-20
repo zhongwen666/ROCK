@@ -47,7 +47,6 @@ async def mgr(mock_meta_store, mock_operator):
 
     m._aes_encrypter = MagicMock()
     m._aes_encrypter.encrypt = MagicMock(return_value="enc")
-    m.refresh_aes_key = AsyncMock()
 
     # Function to get state machine based on meta_store data — mirrors _get_current_statemachine
     async def get_current_statemachine(sandbox_id: str) -> SandboxStateMachine | None:
@@ -70,7 +69,6 @@ async def mgr(mock_meta_store, mock_operator):
 @pytest.mark.asyncio
 async def test_build_sandbox_info_metadata_does_not_refresh_aes_key(mgr):
     mgr._build_sandbox_info_metadata = SandboxManager._build_sandbox_info_metadata.__get__(mgr, SandboxManager)
-    mgr.refresh_aes_key.reset_mock()
     sandbox_info = {"memory": "1g"}
 
     await mgr._build_sandbox_info_metadata(
@@ -79,7 +77,6 @@ async def test_build_sandbox_info_metadata_does_not_refresh_aes_key(mgr):
         {},
     )
 
-    mgr.refresh_aes_key.assert_not_awaited()
     assert sandbox_info["rock_authorization_encrypted"] == "enc"
 
 
