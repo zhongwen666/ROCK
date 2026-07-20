@@ -6,17 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-<<<<<<< HEAD
 import rock.config as config_module
-from rock.config import ImageRegistryMirror, RockConfig, RuntimeConfig, _resolve_k8s_template_includes
-=======
 from rock.config import (
     ImageRegistryMirror,
     RockConfig,
     RuntimeConfig,
     _resolve_k8s_template_includes,
 )
->>>>>>> 5ef04d734 (rm aes_encrypt_key from nacos)
 
 
 @pytest.mark.asyncio
@@ -25,7 +21,6 @@ async def test_rock_config():
     assert rock_config
 
 
-<<<<<<< HEAD
 def test_logging_config_defaults_to_exception_tracebacks_enabled():
     config = config_module.LoggingConfig()
 
@@ -43,7 +38,8 @@ def test_logging_config_from_yaml(tmp_path, monkeypatch, enabled):
     rock_config = RockConfig.from_env(str(yaml_path))
 
     assert rock_config.logging.exception_traceback_enabled is enabled
-=======
+
+
 def test_aes_encrypt_key_loads_from_yaml_top_level(tmp_path):
     yaml_path = tmp_path / "rock-test.yml"
     yaml_path.write_text(
@@ -60,7 +56,6 @@ def test_aes_encrypt_key_loads_from_yaml_top_level(tmp_path):
     assert rock_config.aes_encrypt_key == "yaml-key"
     assert not hasattr(rock_config.proxy_service, "aes_encrypt_key")
     assert rock_config.proxy_service.timeout == 42.0
->>>>>>> 5ef04d734 (rm aes_encrypt_key from nacos)
 
 
 @pytest.mark.asyncio

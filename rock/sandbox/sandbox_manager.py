@@ -73,16 +73,11 @@ class SandboxManager(BaseManager):
         self._dir_storage = None
         self._image_storage = None
         self._init_archive_storage(rock_config)
-<<<<<<< HEAD
-        self._aes_encrypter = AESEncryption()
-        self._proxy_service = create_sandbox_proxy_service(rock_config=rock_config, meta_store=meta_store)
-=======
         aes_encrypt_key = rock_config.aes_encrypt_key
         if not aes_encrypt_key:
             raise ValueError("aes_encrypt_key must be configured in YAML for the admin role")
         self._aes_encrypter = AESEncryption(aes_encrypt_key)
-        self._proxy_service = SandboxProxyService(rock_config=rock_config, meta_store=meta_store)
->>>>>>> 5ef04d734 (rm aes_encrypt_key from nacos)
+        self._proxy_service = create_sandbox_proxy_service(rock_config=rock_config, meta_store=meta_store)
         logger.info("sandbox service init success")
 
     def _init_archive_storage(self, rock_config: RockConfig) -> None:
