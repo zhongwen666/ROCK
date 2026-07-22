@@ -67,8 +67,9 @@ class SandboxLifecycleHelper:
 
     @staticmethod
     def _resolve_user_seconds(info: dict[str, Any], field: str) -> int | None:
-        raw = info.get(field)
-        if raw is None:
+        if field in info:
+            raw = info[field]
+        else:
             spec = info.get("spec") or {}
             raw = spec.get(field)
         return SandboxLifecycleHelper._coerce_seconds(raw)
@@ -175,7 +176,6 @@ class SandboxStateMachine(StateChart):
         # only meaningful for actually-started sandboxes.
         now = datetime.datetime.now(zoneinfo.ZoneInfo(env_vars.ROCK_TIME_ZONE))
         sandbox_info["stop_time"] = now.isoformat(timespec="seconds")
-        sandbox_info["auto_stop_time"] = None
         sandbox_info["auto_transition_state"] = None
         sandbox_info["auto_transition_time"] = None
         if auto_transition:
@@ -318,7 +318,6 @@ class SandboxStateMachine(StateChart):
 
         sandbox_info["state"] = RockState.DELETED
         sandbox_info["delete_time"] = get_iso8601_timestamp()
-        sandbox_info["auto_stop_time"] = None
         sandbox_info["auto_transition_state"] = None
         sandbox_info["auto_transition_time"] = None
         await meta_store.archive(sandbox_id, sandbox_info)
@@ -342,7 +341,6 @@ class SandboxStateMachine(StateChart):
         sandbox_info["state"] = RockState.ARCHIVING
         sandbox_info["archive_prefix"] = prefix
         sandbox_info["registry_namespace"] = registry_ns
-        sandbox_info["auto_stop_time"] = None
         sandbox_info["auto_transition_state"] = None
         sandbox_info["auto_transition_time"] = None
         await meta_store.archive(sandbox_id, sandbox_info)
@@ -365,7 +363,6 @@ class SandboxStateMachine(StateChart):
         now = datetime.datetime.now(zoneinfo.ZoneInfo(env_vars.ROCK_TIME_ZONE))
         sandbox_info["state"] = RockState.ARCHIVED
         sandbox_info["archive_time"] = now.isoformat(timespec="seconds")
-        sandbox_info["auto_stop_time"] = None
         sandbox_info["auto_transition_state"] = None
         sandbox_info["auto_transition_time"] = None
         if auto_transition and auto_transition.auto_delete_archived_seconds is not None:
@@ -381,7 +378,6 @@ class SandboxStateMachine(StateChart):
         sandbox_info = self.sandbox_info or {}
         sandbox_info["state"] = RockState.STOPPED
         sandbox_info["archive_time"] = None
-        sandbox_info["auto_stop_time"] = None
         sandbox_info["auto_transition_state"] = None
         sandbox_info["auto_transition_time"] = None
         if auto_transition and auto_transition.auto_delete_seconds is not None:
