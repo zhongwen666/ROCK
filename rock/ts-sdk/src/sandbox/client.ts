@@ -26,6 +26,7 @@ export { RunModeEnum as RunMode };
 import {
   ObservationSchema,
   CommandResponseSchema,
+  CommitStatusResponseSchema,
   IsAliveResponseSchema,
   SandboxStatusResponseSchema,
   CreateSessionResponseSchema,
@@ -37,6 +38,7 @@ import {
 import type {
   Observation,
   CommandResponse,
+  CommitStatusResponse,
   IsAliveResponse,
   SandboxResponse,
   SandboxStatusResponse,
@@ -119,6 +121,8 @@ export abstract class AbstractSandbox {
   abstract restart(): Promise<void>;
   abstract archive(): Promise<void>;
   abstract commit(imageTag: string, username: string, password: string): Promise<CommandResponse | undefined>;
+  abstract commitAsync(imageTag: string, username: string, password: string): Promise<CommitStatusResponse | undefined>;
+  abstract getCommitStatus(): Promise<CommitStatusResponse | undefined>;
   abstract attach(sandboxId: string): Promise<void>;
   abstract arun(
     cmd: string,
@@ -533,6 +537,53 @@ export class Sandbox extends AbstractSandbox {
       throw new Error(`Failed to execute command: ${JSON.stringify(response)}`);
     }
     return CommandResponseSchema.parse(response.result);
+  }
+
+  /**
+   * Start committing the sandbox container as a background task.
+   *
+   * @param imageTag - Tag for the new image (e.g., "my-image:v1")
+   * @param username - Registry username for authentication
+   * @param password - Registry password for authentication
+   * @returns RUNNING task status, which callers can poll with getCommitStatus(),
+   *          or undefined if sandbox_id is not set.
+   */
+  async commitAsync(imageTag: string, username: string, password: string): Promise<CommitStatusResponse | undefined> {
+    if (!this.sandboxId) {
+      return;
+    }
+    const url = `${this.url}/commit`;
+    const headers = this.buildHeaders();
+    const data = {
+      sandboxId: this.sandboxId,
+      imageTag,
+      username,
+      password,
+    };
+    const response = await HttpUtils.post<CommitStatusResponse & { code?: number }>(url, headers, data);
+    logger.debug(`Commit sandbox response: ${JSON.stringify(response)}`);
+    if (response.status !== 'Success') {
+      throw new Error(`Failed to execute command: ${JSON.stringify(response)}`);
+    }
+    return CommitStatusResponseSchema.parse(response.result);
+  }
+
+  /**
+   * Get the status of the sandbox's current commit task.
+   *
+   * @returns Current commit task status, or undefined if sandbox_id is not set.
+   */
+  async getCommitStatus(): Promise<CommitStatusResponse | undefined> {
+    if (!this.sandboxId) {
+      return;
+    }
+    const url = `${this.url}/commit/${encodeURIComponent(this.sandboxId)}`;
+    const response = await HttpUtils.get<CommitStatusResponse & { code?: number }>(url, this.buildHeaders());
+    logger.debug(`Get commit status response: ${JSON.stringify(response)}`);
+    if (response.status !== 'Success') {
+      throw new Error(`Failed to get commit status: ${JSON.stringify(response)}`);
+    }
+    return CommitStatusResponseSchema.parse(response.result);
   }
 
   /**

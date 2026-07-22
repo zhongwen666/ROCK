@@ -7,6 +7,7 @@ import time
 import warnings
 from enum import Enum
 from pathlib import Path
+from urllib.parse import quote
 
 from httpx import ReadTimeout
 from typing_extensions import deprecated
@@ -20,6 +21,7 @@ from rock.actions import (
     CloseSessionResponse,
     Command,
     CommandResponse,
+    CommitStatusResponse,
     CreateBashSessionRequest,
     CreateBashSessionResponse,
     ExecuteBashSessionResponse,
@@ -360,9 +362,9 @@ class Sandbox(AbstractSandbox):
                 raise_for_code(rock_response.code, f"Failed to archive sandbox: {response}")
             raise Exception(f"Failed to archive sandbox: {response}")
 
-    async def commit(self, image_tag: str, username: str, password: str):
+    async def commit(self, image_tag: str, username: str, password: str) -> CommandResponse | None:
         if not self.sandbox_id:
-            return
+            return None
 
         url = f"{self._url}/commit"
         headers = self._build_headers()
@@ -378,6 +380,39 @@ class Sandbox(AbstractSandbox):
             raise Exception(f"Failed to execute command: {response}")
         result: dict = response.get("result")
         return CommandResponse(**result)
+
+    async def commit_async(self, image_tag: str, username: str, password: str) -> CommitStatusResponse | None:
+        if not self.sandbox_id:
+            return None
+
+        response = await HttpUtils.post(
+            f"{self._url}/commit",
+            self._build_headers(),
+            {
+                "sandbox_id": self.sandbox_id,
+                "image_tag": image_tag,
+                "username": username,
+                "password": password,
+            },
+        )
+        logging.debug(f"Commit sandbox response: {response}")
+        if "Success" != response.get("status"):
+            raise Exception(f"Failed to start commit: {response}")
+        return CommitStatusResponse(**response["result"])
+
+    async def get_commit_status(self) -> CommitStatusResponse | None:
+        if not self.sandbox_id:
+            return None
+
+        encoded_sandbox_id = quote(self.sandbox_id, safe="")
+        response = await HttpUtils.get(
+            f"{self._url}/commit/{encoded_sandbox_id}",
+            self._build_headers(),
+        )
+        logging.debug(f"Get commit status response: {response}")
+        if "Success" != response.get("status"):
+            raise Exception(f"Failed to get commit status: {response}")
+        return CommitStatusResponse(**response["result"])
 
     async def create_session(self, create_session_request: CreateBashSessionRequest) -> CreateBashSessionResponse:
         url = f"{self._url}/create_session"
