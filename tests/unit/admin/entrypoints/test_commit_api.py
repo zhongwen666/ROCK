@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -207,29 +209,69 @@ async def test_commit_uses_database_metadata_and_returns_not_found_and_process_l
     assert transport_request.shell is False
     assert transport_request.timeout == DISPATCH_TIMEOUT_SECONDS
 
-    post_responses = [
-        {"status": "Success", "result": {"stdout": "committed", "stderr": "", "exit_code": 0}},
-        {
-            "status": "Success",
-            "result": {
-                "sandbox_id": "sandbox-1",
-                "image_tag": "registry.example/app:v1",
-                "phase": "RUNNING",
-                "started_at": "2026-01-01T00:00:00Z",
-            },
+    running_response = {
+        "status": "Success",
+        "result": {
+            "sandbox_id": "sandbox-1",
+            "image_tag": "registry.example/app:v1",
+            "phase": "RUNNING",
+            "started_at": "2026-01-01T00:00:00Z",
         },
-    ]
+    }
+    succeeded_response = {
+        "status": "Success",
+        "result": {
+            "sandbox_id": "sandbox-1",
+            "image_tag": "registry.example/app:v1",
+            "phase": "SUCCEEDED",
+            "started_at": "2026-01-01T00:00:00Z",
+            "completed_at": "2026-01-01T00:00:05Z",
+            "exit_code": 0,
+        },
+    }
+    post_responses = [running_response, running_response, running_response]
+    get_responses = [succeeded_response, succeeded_response]
+    wait_timeouts = []
+    sleep_intervals = []
 
     async def post_response(_url: str, _headers: dict, _data: dict) -> dict:
         return post_responses.pop(0)
+
+    async def get_response(_url: str, _headers: dict) -> dict:
+        return get_responses.pop(0)
+
+    async def wait_for(awaitable, timeout: float):
+        wait_timeouts.append(timeout)
+        return await awaitable
+
+    async def sleep(interval: float):
+        sleep_intervals.append(interval)
 
     sdk_sandbox = object.__new__(Sandbox)
     sdk_sandbox._sandbox_id = "sandbox-1"
     sdk_sandbox._url = "http://admin"
     sdk_sandbox._build_headers = lambda: {}
     monkeypatch.setattr(HttpUtils, "post", post_response)
-    legacy_commit = await sdk_sandbox.commit("registry.example/app:v1", "user", "secret")
-    assert legacy_commit == CommandResponse(stdout="committed", stderr="", exit_code=0)
+    monkeypatch.setattr(HttpUtils, "get", get_response)
+    monkeypatch.setattr(asyncio, "wait_for", wait_for)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    default_commit = await sdk_sandbox.commit("registry.example/app:v1", "user", "secret")
+    custom_commit = await sdk_sandbox.commit("registry.example/app:v1", "user", "secret", timeout=7, interval=0.25)
+    assert (
+        default_commit
+        == custom_commit
+        == CommitStatusResponse(
+            sandbox_id="sandbox-1",
+            image_tag="registry.example/app:v1",
+            phase=CommitPhase.SUCCEEDED,
+            started_at="2026-01-01T00:00:00Z",
+            completed_at="2026-01-01T00:00:05Z",
+            exit_code=0,
+        )
+    )
+    assert wait_timeouts == [180, 7]
+    assert sleep_intervals == [2, 0.25]
+
     async_commit = await sdk_sandbox.commit_async("registry.example/app:v1", "user", "secret")
     assert async_commit == CommitStatusResponse(
         sandbox_id="sandbox-1",
