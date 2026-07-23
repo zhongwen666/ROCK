@@ -178,3 +178,35 @@ async def commit_and_wait(sandbox):
 ```
 
 当调用方不希望等待，或需要自行控制轮询逻辑时，可直接使用 `commit_async()`。该方法返回任务的初始状态，后续状态通过 `get_commit_status()` 查询。
+
+## TypeScript SDK
+
+使用 `commit()` 发起任务并等待最终状态。该方法内部调用 `commitAsync()`，并轮询 `getCommitStatus()`。`timeout` 和 `interval` 参数的单位为秒，默认值分别为 `180` 和 `2`。
+
+```typescript
+import { CommitPhase } from 'rl-rock';
+
+async function commitAndWait(sandbox) {
+  const status = await sandbox.commit(
+    'registry.example.com/team/app:v1',
+    'registry-user',
+    'registry-password',
+    180,
+    2
+  );
+  if (!status) {
+    throw new Error('sandbox_id 未设置');
+  }
+
+  if (status.phase === CommitPhase.FAILED) {
+    throw new Error(
+      `commit 失败: code=${status.errorCode}, ` +
+      `stage=${status.failedStage}, message=${status.errorMessage}`
+    );
+  }
+
+  console.log(`镜像推送成功: ${status.imageTag}`);
+}
+```
+
+超时只会停止 SDK 端的等待，不会取消 worker 上已经运行的任务。调用方需要自行控制轮询时可使用 `commitAsync()`，之后通过 `getCommitStatus()` 查询任务状态。

@@ -178,3 +178,35 @@ async def commit_and_wait(sandbox):
 ```
 
 Use `commit_async()` directly when the caller must not wait or needs custom polling behavior. Its return value is the initial task status; call `get_commit_status()` to query subsequent status.
+
+## TypeScript SDK
+
+Use `commit()` to start the task and wait for its final status. It calls `commitAsync()` internally and polls `getCommitStatus()`. The `timeout` and `interval` arguments use seconds and default to `180` and `2`.
+
+```typescript
+import { CommitPhase } from 'rl-rock';
+
+async function commitAndWait(sandbox) {
+  const status = await sandbox.commit(
+    'registry.example.com/team/app:v1',
+    'registry-user',
+    'registry-password',
+    180,
+    2
+  );
+  if (!status) {
+    throw new Error('sandbox_id is not set');
+  }
+
+  if (status.phase === CommitPhase.FAILED) {
+    throw new Error(
+      `commit failed: code=${status.errorCode}, ` +
+      `stage=${status.failedStage}, message=${status.errorMessage}`
+    );
+  }
+
+  console.log(`image pushed: ${status.imageTag}`);
+}
+```
+
+A timeout only stops the SDK from waiting; it does not cancel the worker task. Use `commitAsync()` when the caller needs to control polling, and call `getCommitStatus()` to query the task later.
