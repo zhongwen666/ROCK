@@ -795,8 +795,8 @@ class DockerDeployment(AbstractDeployment):
 
         env_arg = self._build_env_args()
 
-        with StageTimer("startup_timing", f"[{self._container_name}] Random sleep", logger):
-            time.sleep(random.randint(0, 5))
+        # with StageTimer("startup_timing", f"[{self._container_name}] Random sleep", logger):
+        #     time.sleep(random.randint(0, 5))
         runtime_args = self._build_runtime_args()
         cmds = [
             "docker",
