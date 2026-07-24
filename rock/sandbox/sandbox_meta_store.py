@@ -55,6 +55,10 @@ class SandboxMetaStore:
     # Public API
     # ------------------------------------------------------------------
 
+    @property
+    def redis_provider(self) -> RedisProvider:
+        return self._redis
+
     @monitor_metastore_operation
     async def create(
         self,

@@ -342,13 +342,33 @@ class SandboxManager(BaseManager):
         if state == State.DELETED:
             logger.info(f"delete: sandbox {sandbox_id} already deleted, noop")
             return
-        if state not in (State.STOPPED, State.ARCHIVED):
+        deletable_states = {State.STOPPED, State.ARCHIVED}
+        supports_running_delete = self._operator.supports_running_delete
+        if supports_running_delete:
+            deletable_states.add(State.RUNNING)
+        if state not in deletable_states:
             raise BadRequestRockError(
                 f"Sandbox {sandbox_id} cannot be deleted: current state is '{state.value}', must be stopped or archived first"
             )
 
+        if supports_running_delete and state == State.RUNNING:
+            # Active metadata is served from Redis, while the deployment spec
+            # is stored only in the DB. Rebuild the generic deployment fields
+            # required by operators that support deleting a live sandbox.
+            sandbox_info = sm.sandbox_info or {}
+            if not sandbox_info.get("spec"):
+                sandbox_info["spec"] = {
+                    "container_name": sandbox_id,
+                    "image": sandbox_info.get("image") or DockerDeploymentConfig.model_fields["image"].default,
+                    "memory": sandbox_info.get("memory") or DockerDeploymentConfig.model_fields["memory"].default,
+                    "cpus": float(sandbox_info.get("cpus") or DockerDeploymentConfig.model_fields["cpus"].default),
+                    "extended_params": sandbox_info.get("extended_params") or {},
+                }
+                sm.sandbox_info = sandbox_info
+
+        delete_event = "delete_running" if supports_running_delete and state == State.RUNNING else "delete"
         await sm.send(
-            "delete",
+            delete_event,
             sandbox_id=sandbox_id,
             operator=self._operator,
             meta_store=self._meta_store,
