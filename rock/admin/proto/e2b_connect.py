@@ -12,7 +12,7 @@ from rock.sdk.common.exceptions import BadRequestRockError, E2BConnectError
 
 CONNECT_CONTENT_TYPE = "application/connect+json"
 CONNECT_REQUEST_LIMIT = 1024 * 1024
-MAX_COMMAND_TIMEOUT_MS = 60_000
+MAX_COMMAND_TIMEOUT_MS = 85_000
 
 
 def sandbox_id_from_headers(headers: Mapping[str, str]) -> str:
