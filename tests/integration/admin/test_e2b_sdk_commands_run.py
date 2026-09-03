@@ -8,7 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import uvicorn
-from e2b import CommandExitException, FileNotFoundException, FileType, Sandbox, TimeoutException
+from e2b import (
+    CommandExitException,
+    FileNotFoundException,
+    FileType,
+    Sandbox,
+    SandboxNotFoundException,
+    TimeoutException,
+)
 from fastapi import FastAPI, Request
 from httpx import AsyncClient
 from httpx import Request as HTTPXRequest
@@ -18,10 +25,13 @@ from rock.admin.entrypoints import e2b_api as e2b_api_module
 from rock.admin.entrypoints import e2b_proxy_api as e2b_proxy_api_module
 from rock.admin.entrypoints.e2b_api import e2b_router, set_e2b_service
 from rock.admin.entrypoints.e2b_proxy_api import e2b_proxy_router, set_e2b_proxy_service
-from rock.admin.proto.response import SandboxStartResponse
+from rock.admin.proto.response import SandboxStartResponse, SandboxStatusResponse
 from rock.admin.service.e2b_proxy_service import E2BProxyService
+from rock.admin.service.e2b_service import E2BService
 from rock.deployments.constants import Port
+from rock.sandbox.sandbox_manager import SandboxManager
 from rock.sandbox.service.sandbox_proxy_service import SandboxProxyService
+from rock.sdk.common.exceptions import SandboxNotFoundRockError
 
 _MISSING = object()
 pytestmark = [pytest.mark.integration]
@@ -101,14 +111,6 @@ def e2b_command_stack(rocklet_remote_server):
     control_headers = []
     data_headers = []
 
-    control_service = MagicMock()
-    control_service.start = AsyncMock(
-        return_value=SandboxStartResponse(
-            sandbox_id="sandbox-123",
-            host_name="sandbox-123",
-            host_ip="127.0.0.1",
-        )
-    )
     control_app = FastAPI()
 
     @control_app.middleware("http")
@@ -125,9 +127,43 @@ def e2b_command_stack(rocklet_remote_server):
         "port_mapping": {int(Port.PROXY): rocklet_remote_server.port},
         "env": {"BASE": "sandbox"},
     }
+    timeout_state = {"value": None}
     meta_store = MagicMock()
-    meta_store.get = AsyncMock(return_value=sandbox_record)
-    meta_store.get_timeout = AsyncMock(return_value=None)
+
+    async def get_sandbox_record(sandbox_id: str, check_db: bool = False):
+        return sandbox_record if sandbox_id == sandbox_record["sandbox_id"] else None
+
+    async def update_timeout(sandbox_id: str, timeout_info: dict[str, str]):
+        assert sandbox_id == sandbox_record["sandbox_id"]
+        timeout_state["value"] = timeout_info
+
+    meta_store.get = AsyncMock(side_effect=get_sandbox_record)
+    meta_store.get_timeout = AsyncMock(side_effect=lambda sandbox_id: timeout_state["value"])
+    meta_store.update_timeout = AsyncMock(side_effect=update_timeout)
+
+    control_manager = SandboxManager.__new__(SandboxManager)
+    control_manager._meta_store = meta_store
+
+    async def get_control_status(
+        sandbox_id: str,
+        include_all_states: bool = False,
+        refresh_timeout: bool = True,
+    ) -> SandboxStatusResponse:
+        if sandbox_id != sandbox_record["sandbox_id"]:
+            raise SandboxNotFoundRockError(f"Sandbox {sandbox_id} not found")
+        return SandboxStatusResponse(sandbox_id=sandbox_id, state=State.RUNNING)
+
+    control_manager.get_status = AsyncMock(side_effect=get_control_status)
+    control_manager.start_from_template = AsyncMock(
+        return_value=SandboxStartResponse(
+            sandbox_id="sandbox-123",
+            host_name="sandbox-123",
+            host_ip="127.0.0.1",
+        )
+    )
+    template_table = MagicMock()
+    template_table.get_ready_template = AsyncMock(return_value=None)
+    control_service = E2BService(control_manager, template_table)
 
     sandbox_manager = SandboxProxyService.__new__(SandboxProxyService)
     sandbox_manager.metrics_monitor = None
@@ -160,6 +196,8 @@ def e2b_command_stack(rocklet_remote_server):
                 "api_key": api_key,
                 "control_headers": control_headers,
                 "data_headers": data_headers,
+                "timeout_state": timeout_state,
+                "control_manager": control_manager,
             }
     finally:
         if previous_control_service is _MISSING:
@@ -200,6 +238,39 @@ def test_commands_run_success_end_to_end(e2b_command_stack, tmp_path):
     assert result.exit_code == 0
     assert ("/sandboxes", e2b_command_stack["api_key"]) in e2b_command_stack["control_headers"]
     assert ("/process.Process/Start", e2b_command_stack["api_key"]) in e2b_command_stack["data_headers"]
+
+
+def test_set_timeout_end_to_end(e2b_command_stack):
+    sandbox = _create_sandbox(e2b_command_stack)
+
+    before = int(time.time())
+    assert sandbox.set_timeout(120) is None
+    after = int(time.time())
+
+    timeout_info = e2b_command_stack["timeout_state"]["value"]
+    assert before + 120 <= int(timeout_info["expire_time"]) <= after + 120
+    assert timeout_info["auto_clear_time"] == "2"
+    e2b_command_stack["control_manager"].get_status.assert_awaited_with(
+        "sandbox-123",
+        include_all_states=True,
+        refresh_timeout=False,
+    )
+    assert ("/sandboxes/sandbox-123/timeout", e2b_command_stack["api_key"]) in e2b_command_stack["control_headers"]
+
+    sandbox.commands.run("true", stdin=False, timeout=2.5)
+    assert e2b_command_stack["timeout_state"]["value"]["auto_clear_time"] == "2"
+
+    assert sandbox.set_timeout(0) is None
+    assert int(e2b_command_stack["timeout_state"]["value"]["expire_time"]) <= int(time.time())
+    assert e2b_command_stack["timeout_state"]["value"]["auto_clear_time"] == "0"
+
+    with pytest.raises(SandboxNotFoundException, match="Sandbox missing not found"):
+        Sandbox.set_timeout(
+            "missing",
+            120,
+            api_url=e2b_command_stack["api_url"],
+            api_key=e2b_command_stack["api_key"],
+        )
 
 
 def test_filesystem_operations_end_to_end(e2b_command_stack, tmp_path):
