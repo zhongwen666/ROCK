@@ -17,12 +17,13 @@ from e2b import (
     TimeoutException,
 )
 from fastapi import FastAPI, Request
-from httpx import AsyncClient
+from httpx import AsyncClient, Client
 from httpx import Request as HTTPXRequest
 
 from rock.actions.sandbox.response import State
 from rock.admin.entrypoints import e2b_api as e2b_api_module
 from rock.admin.entrypoints import e2b_proxy_api as e2b_proxy_api_module
+from rock.admin.entrypoints import sandbox_api as sandbox_api_module
 from rock.admin.entrypoints.e2b_api import e2b_router, set_e2b_service
 from rock.admin.entrypoints.e2b_proxy_api import e2b_proxy_router, set_e2b_proxy_service
 from rock.admin.proto.response import SandboxStartResponse, SandboxStatusResponse
@@ -106,7 +107,7 @@ class _HTTPClient:
 
 
 @pytest.fixture
-def e2b_command_stack(rocklet_remote_server):
+def e2b_command_stack(rocklet_remote_server, monkeypatch):
     api_key = "e2b_0000000000000000000000000000000000000000"
     control_headers = []
     data_headers = []
@@ -119,6 +120,7 @@ def e2b_command_stack(rocklet_remote_server):
         return await call_next(request)
 
     control_app.include_router(e2b_router)
+    control_app.include_router(sandbox_api_module.sandbox_router, prefix="/apis/envs/sandbox/v1")
 
     sandbox_record = {
         "sandbox_id": "sandbox-123",
@@ -164,6 +166,7 @@ def e2b_command_stack(rocklet_remote_server):
     template_table = MagicMock()
     template_table.get_ready_template = AsyncMock(return_value=None)
     control_service = E2BService(control_manager, template_table)
+    monkeypatch.setattr(sandbox_api_module, "sandbox_manager", control_manager, raising=False)
 
     sandbox_manager = SandboxProxyService.__new__(SandboxProxyService)
     sandbox_manager.metrics_monitor = None
@@ -238,6 +241,25 @@ def test_commands_run_success_end_to_end(e2b_command_stack, tmp_path):
     assert result.exit_code == 0
     assert ("/sandboxes", e2b_command_stack["api_key"]) in e2b_command_stack["control_headers"]
     assert ("/process.Process/Start", e2b_command_stack["api_key"]) in e2b_command_stack["data_headers"]
+
+
+@pytest.mark.parametrize("query,refresh_timeout", [({}, True), ({"refresh_timeout": "false"}, False)])
+def test_get_status_refresh_timeout_query_end_to_end(e2b_command_stack, query, refresh_timeout):
+    sandbox = _create_sandbox(e2b_command_stack)
+
+    with Client(base_url=e2b_command_stack["api_url"]) as client:
+        response = client.get(
+            "/apis/envs/sandbox/v1/get_status",
+            params={"sandbox_id": sandbox.sandbox_id, **query},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["sandbox_id"] == sandbox.sandbox_id
+    e2b_command_stack["control_manager"].get_status.assert_awaited_once_with(
+        sandbox.sandbox_id,
+        include_all_states=False,
+        refresh_timeout=refresh_timeout,
+    )
 
 
 def test_set_timeout_end_to_end(e2b_command_stack):
